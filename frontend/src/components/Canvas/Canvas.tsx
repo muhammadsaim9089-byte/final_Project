@@ -254,9 +254,16 @@ export function Canvas() {
 
   const showProgressOverlay = isGenerating || isStaggering;
 
+  // Ref to the ReactFlow wrapper div — used by FloatingHeader for PNG export
+  const reactFlowWrapperRef = useRef<HTMLDivElement>(null);
+
   return (
     <div className="w-full h-full flex flex-col relative text-sm">
-      <FloatingHeader />
+      <FloatingHeader
+        generatedSql={generatedSql}
+        rawSchema={rawSchemaContext}
+        reactFlowWrapperRef={reactFlowWrapperRef}
+      />
 
       {/* SVG Definitions for Crow's Foot Markers */}
       <svg style={{ position: 'absolute', top: 0, left: 0, width: 0, height: 0 }}>
@@ -272,7 +279,8 @@ export function Canvas() {
       
       <div className="flex-1 w-full relative overflow-hidden">
         <HoverProvider>
-          <div className="absolute inset-0 z-0">
+          {/* Wrapper div is the PNG capture target */}
+          <div className="absolute inset-0 z-0" ref={reactFlowWrapperRef}>
             <ReactFlow
               nodes={nodes}
               edges={edges}

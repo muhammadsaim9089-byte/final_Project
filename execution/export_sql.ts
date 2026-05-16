@@ -1,12 +1,22 @@
 import { Schema, Entity } from './utils/schema_validator';
 import { logger } from './utils/logger';
 
+/** Map of  "tableName.columnName"  →  CHECK expression (raw SQL fragment).
+ *  Example: { 'users.role': `role IN ('admin','designer','viewer','editor')` } */
+export type CheckConstraints = Record<string, string>;
+
 export interface SqlExportConfig {
     includeDropTables?: boolean;
-    useAlterTable?: boolean; // For cyclics
+    useAlterTable?: boolean;      // For cyclic FK scenarios
+    checkConstraints?: CheckConstraints; // Domain validation rules
+    createIndexes?: boolean;      // AUTO-index every FK column
 }
 
-export function generateTables(schema: Schema, dialect: 'postgres' | 'mysql' | 'sqlite', config: SqlExportConfig = {}): string {
+export function generateTables(
+    schema: Schema,
+    dialect: 'postgres' | 'mysql' | 'sqlite',
+    config: SqlExportConfig = {}
+): string {
     logger.logInfo('generateTables', `Starting SQL DDL export for ${dialect}`);
     let sql = `-- DesignDB Export DDL\n-- Dialect: ${dialect.toUpperCase()}\n-- Generated At: ${new Date().toISOString()}\n\n`;
 
@@ -52,23 +62,61 @@ export function generateTables(schema: Schema, dialect: 'postgres' | 'mysql' | '
             colDefs.push(def);
         }
 
-        // Add Foreign Keys (if not using alter table mode)
+        // Add Foreign Keys inline (when not using ALTER TABLE mode)
         if (!config.useAlterTable) {
             const fks = schema.relationships.filter(r => r.fromEntity === entity.name);
             for (const fk of fks) {
-                colDefs.push(`    CONSTRAINT fk_${entity.name}_${fk.foreignKey} FOREIGN KEY (${escapeName(fk.foreignKey, dialect)}) REFERENCES ${escapeName(fk.toEntity, dialect)}(${escapeName(fk.referencedKey, dialect)}) ON DELETE ${fk.onDelete} ON UPDATE ${fk.onUpdate}`);
+                colDefs.push(
+                    `    CONSTRAINT fk_${entity.name}_${fk.foreignKey}` +
+                    ` FOREIGN KEY (${escapeName(fk.foreignKey, dialect)})` +
+                    ` REFERENCES ${escapeName(fk.toEntity, dialect)}(${escapeName(fk.referencedKey, dialect)})` +
+                    ` ON DELETE ${fk.onDelete} ON UPDATE ${fk.onUpdate}`
+                );
+            }
+        }
+
+        // Add CHECK constraints for this table
+        if (config.checkConstraints) {
+            for (const [key, expr] of Object.entries(config.checkConstraints)) {
+                const [tbl, col] = key.split('.');
+                if (tbl === entity.name) {
+                    const constraintName = `chk_${entity.name}_${col}`;
+                    colDefs.push(`    CONSTRAINT ${constraintName} CHECK (${expr})`);
+                }
             }
         }
 
         sql += colDefs.join(',\n') + '\n);\n\n';
     }
 
-    // 3. ALTER TABLES (If cyclics detected or explicitly requested)
+    // 3. ALTER TABLES (for cyclic FK scenarios)
     if (config.useAlterTable) {
-        sql += `-- ==========================================\n-- FOREIGN KEYS\n-- ==========================================\n`;
+        sql += `-- ==========================================\n-- FOREIGN KEYS (ALTER TABLE)\n-- ==========================================\n`;
         for (const rel of schema.relationships) {
-            sql += `ALTER TABLE ${escapeName(rel.fromEntity, dialect)} ADD CONSTRAINT fk_${rel.fromEntity}_${rel.foreignKey} FOREIGN KEY (${escapeName(rel.foreignKey, dialect)}) REFERENCES ${escapeName(rel.toEntity, dialect)}(${escapeName(rel.referencedKey, dialect)}) ON DELETE ${rel.onDelete} ON UPDATE ${rel.onUpdate};\n`;
+            sql +=
+                `ALTER TABLE ${escapeName(rel.fromEntity, dialect)}` +
+                ` ADD CONSTRAINT fk_${rel.fromEntity}_${rel.foreignKey}` +
+                ` FOREIGN KEY (${escapeName(rel.foreignKey, dialect)})` +
+                ` REFERENCES ${escapeName(rel.toEntity, dialect)}(${escapeName(rel.referencedKey, dialect)})` +
+                ` ON DELETE ${rel.onDelete} ON UPDATE ${rel.onUpdate};\n`;
         }
+        sql += '\n';
+    }
+
+    // 4. CREATE INDEXES on every FK column (improves JOIN performance)
+    if (config.createIndexes) {
+        sql += `-- ==========================================\n-- INDEXES (FK columns)\n-- ==========================================\n`;
+        const seen = new Set<string>();
+        for (const rel of schema.relationships) {
+            const key = `${rel.fromEntity}.${rel.foreignKey}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            const idxName  = `idx_${rel.fromEntity}_${rel.foreignKey}`;
+            const tblName  = escapeName(rel.fromEntity, dialect);
+            const colName  = escapeName(rel.foreignKey, dialect);
+            sql += `CREATE INDEX IF NOT EXISTS ${idxName} ON ${tblName} (${colName});\n`;
+        }
+        sql += '\n';
     }
 
     logger.logInfo('generateTables', 'SQL export generated successfully.');
@@ -118,15 +166,16 @@ function topologicalSort(schema: Schema): Entity[] {
     return sorted;
 }
 
-// Helper: Escape reserved keywords
+// Helper: Escape SQL reserved keywords
 function escapeName(name: string, dialect: 'postgres' | 'mysql' | 'sqlite'): string {
-    const reserved = ['user', 'order', 'group', 'select', 'where', 'from', 'table'];
+    const reserved = [
+        'user','users','order','orders','group','select','where','from','table',
+        'index','key','rank','values','schema','column','trigger','view','check'
+    ];
     const isReserved = reserved.includes(name.toLowerCase());
-    
     if (!isReserved) return name;
-    
     if (dialect === 'mysql') return `\`${name}\``;
-    return `"${name}"`; // Postgres & SQLite use "
+    return `"${name}"`; // Postgres & SQLite
 }
 
 // Helper: Auto-increment mapping

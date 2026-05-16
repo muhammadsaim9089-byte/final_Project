@@ -1,0 +1,120 @@
+@font-face {
+  font-family: 'Vagnola';
+  src: url('/fonts/VagnolaDemo-Regular.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+}
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 260 40% 14%; /* #1f1633 in HSL */
+    --foreground: 0 0% 100%; /* #ffffff */
+    
+    /* Sentry Colors -> Shadcn Tokens */
+    --card: 258 40% 11%;     
+    --card-foreground: 0 0% 100%;
+    
+    --popover: 258 40% 11%;
+    --popover-foreground: 0 0% 100%;
+    
+    --primary: 247 43% 56%;  
+    --primary-foreground: 0 0% 100%;
+    
+    --secondary: 273 17% 46%; 
+    --secondary-foreground: 0 0% 100%;
+    
+    --muted: 253 33% 26%;     
+    --muted-foreground: 220 14% 91%; 
+    
+    --accent: 76 83% 62%;    
+    --accent-foreground: 260 40% 14%;
+    
+    --destructive: 343 94% 74%; 
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 253 33% 26%;   
+    --input: 253 33% 26%;
+    --ring: 247 43% 56%;
+    
+    --radius: 0.5rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Vagnola', sans-serif;
+  }
+
+  /* Canvas "No-Line" Rule Enforcement */
+  .ethereal-panel {
+    @apply bg-card border-none shadow-ambient;
+  }
+
+  /* Floating Glassmorphism Rule */
+  .glass-panel {
+    @apply bg-white/5 backdrop-blur-[12px] saturate-[180%] shadow-elevated;
+  }
+  .glass-panel-hover {
+    @apply transition-colors duration-200 hover:bg-[#36166b]/15;
+  }
+
+  /* Node Element Glow */
+  .node-panel {
+    @apply bg-white/10 backdrop-blur-[12px] border border-ghost-border shadow-elevated rounded-lg p-4;
+  }
+  .node-panel-active {
+    @apply shadow-node-active border-[#7eabfc];
+  }
+
+  /* Custom Panel Scrollbar styling */
+  .p-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .p-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .p-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+  }
+  .p-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.2);
+  }
+}
+
+@layer utilities {
+  .animated-panel-border {
+    position: absolute;
+    inset: -1px;
+    padding: 1px;
+    background: conic-gradient(from 0deg, transparent 0%, transparent 40%, rgba(194,239,78,0.8) 100%);
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+            mask-composite: exclude;
+    border-radius: inherit;
+    animation: border-spin 3s linear infinite;
+    pointer-events: none;
+  }
+}
+
+@keyframes border-spin {
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes dash {
+  from {
+    stroke-dashoffset: 24;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}

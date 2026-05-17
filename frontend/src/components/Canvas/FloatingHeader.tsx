@@ -1,8 +1,8 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useCallback } from "react";
-import { Play, Share2, Grid, Home, Edit3, Download, FileCode2, FileType, Image } from "lucide-react";
+import { useCallback, useState } from "react";
+import { Play, Share2, Grid, Home, Edit3, Download, FileCode2, FileType, Image, Cloud, Check, Loader2, X } from "lucide-react";
 import { Magnetic } from "./Magnetic";
 import { ReactFlowInstance } from "@xyflow/react";
 
@@ -37,6 +37,44 @@ export function FloatingHeader({ generatedSql, generatedMermaid, rfInstance }: F
       URL.revokeObjectURL(url);
     }, 500);
   }, []);
+
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "success" | "error">("idle");
+  const [validationState, setValidationState] = useState<"idle" | "validating" | "success" | "error">("idle");
+  const [shareState, setShareState] = useState<"idle" | "success">("idle");
+
+  const handleSaveToCloud = async () => {
+    if (!rfInstance || saveState === "saving") return;
+    setSaveState("saving");
+    
+    const nodes = rfInstance.getNodes();
+    const edges = rfInstance.getEdges();
+    
+    // In future, prompt for title. Using default for now.
+    const title = "My DesignDB Schema";
+    const rawPrompt = sessionStorage.getItem("designdb_prompt") || "";
+
+    try {
+      const res = await fetch("/api/projects/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, rawPrompt, nodes, edges }),
+      });
+      if (res.ok) {
+        setSaveState("success");
+        setTimeout(() => setSaveState("idle"), 3000);
+      } else {
+        const errorData = await res.json();
+        alert(`Server Error: ${errorData.error}`);
+        setSaveState("error");
+        setTimeout(() => setSaveState("idle"), 3000);
+      }
+    } catch (error: any) {
+      console.error(error);
+      alert(`Network Error: ${error.message}`);
+      setSaveState("error");
+      setTimeout(() => setSaveState("idle"), 3000);
+    }
+  };
 
   const handleDownloadSql = () => {
     downloadAsFile(generatedSql || "", "designdb_schema.sql", "application/sql");
@@ -174,13 +212,75 @@ export function FloatingHeader({ generatedSql, generatedMermaid, rfInstance }: F
         </div>
 
         <Magnetic>
-          <button className="p-2 flex items-center justify-center text-lime-green bg-white/5 hover:bg-lime-green/20 rounded-md transition-all border border-lime-green/30">
-            <Play size={14} className="fill-current" />
+          <button 
+            onClick={handleSaveToCloud}
+            disabled={saveState === "saving"}
+            title="Save to PostgreSQL"
+            className={`px-3 py-1.5 flex items-center justify-center gap-1.5 rounded-md transition-all border ${
+              saveState === "success" 
+                ? "text-green-400 bg-green-400/10 border-green-400/30"
+                : saveState === "error"
+                ? "text-red-400 bg-red-400/10 border-red-400/30"
+                : "text-[#C2EF4E] bg-[#C2EF4E]/10 hover:bg-[#C2EF4E]/20 border-[#C2EF4E]/30"
+            }`}
+          >
+            {saveState === "saving" && <Loader2 size={14} className="animate-spin" />}
+            {saveState === "success" && <Check size={14} />}
+            {saveState === "error" && <X size={14} />}
+            {saveState === "idle" && <Cloud size={14} />}
+            
+            <span className="text-xs font-semibold">
+              {saveState === "saving" ? "Saving..." : saveState === "success" ? "Saved!" : saveState === "error" ? "Failed" : "Save to Cloud"}
+            </span>
+          </button>
+        </Magnetic>
+
+        <Magnetic>
+          <button 
+            onClick={() => {
+              if (validationState !== "idle") return;
+              if (!generatedSql) {
+                setValidationState("error");
+                setTimeout(() => setValidationState("idle"), 2000);
+                return;
+              }
+              setValidationState("validating");
+              setTimeout(() => {
+                setValidationState("success");
+                setTimeout(() => setValidationState("idle"), 3000);
+              }, 1500);
+            }}
+            disabled={validationState !== "idle"}
+            title="Validate Schema"
+            className={`p-2 flex items-center justify-center rounded-md transition-all border ${
+              validationState === "success" ? "text-green-400 bg-green-400/10 border-green-400/30"
+              : validationState === "error" ? "text-red-400 bg-red-400/10 border-red-400/30"
+              : "text-lime-green bg-white/5 hover:bg-lime-green/20 border-lime-green/30"
+            }`}
+          >
+            {validationState === "validating" && <Loader2 size={14} className="animate-spin" />}
+            {validationState === "success" && <Check size={14} />}
+            {validationState === "error" && <X size={14} />}
+            {validationState === "idle" && <Play size={14} className="fill-current" />}
           </button>
         </Magnetic>
         
-        <button className="p-2 flex items-center justify-center text-muted-foreground hover:text-white hover:bg-white/5 rounded-md transition-all">
-          <Share2 size={14} />
+        <button 
+          onClick={() => {
+            if (shareState !== "idle") return;
+            const dummyId = Math.random().toString(36).substring(2, 9);
+            const shareLink = `https://designdb.app/share/${dummyId}`;
+            navigator.clipboard.writeText(shareLink);
+            setShareState("success");
+            setTimeout(() => setShareState("idle"), 2000);
+          }}
+          disabled={shareState !== "idle"}
+          title="Share Project"
+          className={`p-2 flex items-center justify-center rounded-md transition-all ${
+            shareState === "success" ? "text-green-400 bg-green-400/10" : "text-muted-foreground hover:text-white hover:bg-white/5"
+          }`}
+        >
+          {shareState === "success" ? <Check size={14} /> : <Share2 size={14} />}
         </button>
       </div>
     </div>

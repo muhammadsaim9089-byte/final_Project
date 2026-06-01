@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRight, Sparkles } from "lucide-react";
 import { CanvasLoader } from "./CanvasLoader";
@@ -50,21 +50,21 @@ export function PromptBox() {
       <div className="w-full max-w-2xl mx-auto flex flex-col gap-4">
         {/* Prompt container */}
         <div
-          className="relative rounded-2xl transition-all duration-300"
+          className="relative rounded-2xl transition-all duration-300 border"
           style={{
-            background: "rgba(0,18,32,0.55)",
-            backdropFilter: "blur(20px)",
-            WebkitBackdropFilter: "blur(20px)",
-            border: isFocused
-              ? "1px solid rgba(30,84,159,0.6)"
-              : "1px solid rgba(255,255,255,0.06)",
+            background: "rgba(5,10,22,0.65)",
+            backdropFilter: "blur(24px)",
+            WebkitBackdropFilter: "blur(24px)",
+            borderColor: isFocused
+              ? "rgba(194,239,78,0.4)"
+              : "rgba(255,255,255,0.06)",
             boxShadow: isFocused
-              ? "0 0 40px rgba(30,84,159,0.2), inset 0 0 40px rgba(30,84,159,0.04)"
-              : "0 8px 40px rgba(0,0,0,0.4)",
+              ? "0 0 32px rgba(194,239,78,0.1), inset 0 0 24px rgba(255,255,255,0.02)"
+              : "0 12px 48px rgba(0,0,0,0.5)",
           }}
         >
           {/* Sparkle icon */}
-          <div className="absolute top-4 left-4 text-[#1e549f] opacity-70">
+          <div className="absolute top-4.5 left-4.5 text-lime-green/70 animate-pulse">
             <Sparkles size={16} />
           </div>
 
@@ -76,24 +76,24 @@ export function PromptBox() {
             onKeyDown={handleKeyDown}
             placeholder={PLACEHOLDER_PROMPTS[placeholderIdx]}
             rows={4}
-            className="w-full bg-transparent text-white/90 text-sm leading-relaxed resize-none outline-none pl-10 pr-4 pt-4 pb-14 placeholder:text-white/20 transition-colors"
-            style={{ fontFamily: "Vagnola, sans-serif" }}
+            className="w-full bg-transparent text-white/90 text-sm leading-relaxed resize-none outline-none pl-11 pr-4.5 pt-4.5 pb-16 placeholder:text-white/20 transition-colors font-sans"
           />
 
           {/* Footer bar */}
-          <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-4 py-3 border-t border-white/5">
-            <span className="text-[11px] text-white/25 tracking-wide">⌘ + Enter to generate</span>
+          <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-4.5 py-3.5 border-t border-white/[0.06]">
+            <span className="text-[10px] text-white/30 tracking-wide font-mono">
+              CTRL + ENTER to synthesize
+            </span>
             <button
               onClick={handleSubmit}
               disabled={!prompt.trim()}
-              className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+              className="flex items-center gap-2 px-5 py-2 rounded-full text-xs font-bold tracking-wide transition-all duration-200 disabled:opacity-20 disabled:cursor-not-allowed cursor-pointer"
               style={{
                 background: prompt.trim()
-                  ? "linear-gradient(135deg, #1e549f 0%, #052c52 100%)"
+                  ? "#C2EF4E"
                   : "rgba(255,255,255,0.05)",
-                color: "white",
-                border: "1px solid rgba(30,84,159,0.4)",
-                boxShadow: prompt.trim() ? "0 0 16px rgba(30,84,159,0.35)" : "none",
+                color: prompt.trim() ? "#030712" : "rgba(255,255,255,0.3)",
+                boxShadow: prompt.trim() ? "0 4px 16px rgba(194,239,78,0.25)" : "none",
               }}
             >
               Generate Schema
@@ -103,7 +103,7 @@ export function PromptBox() {
         </div>
 
         {/* Quick example chips */}
-        <div className="flex flex-wrap gap-2 justify-center">
+        <div className="flex flex-wrap gap-2 justify-center mt-1">
           {["E-commerce", "SaaS Platform", "Hospital DB", "Social App"].map((chip) => (
             <button
               key={chip}
@@ -112,10 +112,10 @@ export function PromptBox() {
                   `Design a ${chip.toLowerCase()} database with all relevant tables and relationships`
                 )
               }
-              className="px-3 py-1 rounded-full text-[11px] tracking-wide text-white/40 hover:text-white/70 transition-all duration-200 cursor-pointer"
+              className="px-3.5 py-1.5 rounded-full text-[11px] font-medium tracking-wide text-white/40 hover:text-white hover:border-lime-green/30 hover:bg-white/[0.02] hover:scale-[1.03] active:scale-[0.98] transition-all duration-200 cursor-pointer"
               style={{
-                background: "rgba(255,255,255,0.03)",
-                border: "1px solid rgba(255,255,255,0.07)",
+                background: "rgba(255,255,255,0.02)",
+                border: "1px solid rgba(255,255,255,0.06)",
               }}
             >
               {chip}

@@ -11,36 +11,35 @@
 
 @layer base {
   :root {
-    --background: 260 40% 14%; /* #1f1633 in HSL */
-    --foreground: 0 0% 100%; /* #ffffff */
+    --background: 222 47% 4%; /* Cinematic deep space backdrop #030712 */
+    --foreground: 210 40% 98%;
     
-    /* Sentry Colors -> Shadcn Tokens */
-    --card: 258 40% 11%;     
-    --card-foreground: 0 0% 100%;
+    --card: 224 71% 4%;     
+    --card-foreground: 210 40% 98%;
     
-    --popover: 258 40% 11%;
-    --popover-foreground: 0 0% 100%;
+    --popover: 224 71% 4%;
+    --popover-foreground: 210 40% 98%;
     
-    --primary: 247 43% 56%;  
-    --primary-foreground: 0 0% 100%;
+    --primary: 262 83% 58%; /* Rich Glowing Purple #7C3AED */
+    --primary-foreground: 210 40% 98%;
     
-    --secondary: 273 17% 46%; 
-    --secondary-foreground: 0 0% 100%;
+    --secondary: 220 14% 12%; 
+    --secondary-foreground: 210 40% 98%;
     
-    --muted: 253 33% 26%;     
-    --muted-foreground: 220 14% 91%; 
+    --muted: 220 14% 10%;     
+    --muted-foreground: 215 20.2% 65.1%; 
     
-    --accent: 76 83% 62%;    
-    --accent-foreground: 260 40% 14%;
+    --accent: 76 83% 62%; /* Electric Lime #C2EF4E */
+    --accent-foreground: 222 47% 4%;
     
     --destructive: 343 94% 74%; 
-    --destructive-foreground: 0 0% 100%;
+    --destructive-foreground: 210 40% 98%;
 
-    --border: 253 33% 26%;   
-    --input: 253 33% 26%;
-    --ring: 247 43% 56%;
+    --border: 220 14% 12%;   
+    --input: 220 14% 12%;
+    --ring: 262 83% 58%;
     
-    --radius: 0.5rem;
+    --radius: 0.75rem;
   }
 }
 
@@ -53,25 +52,50 @@
     font-family: 'Vagnola', sans-serif;
   }
 
-  /* Canvas "No-Line" Rule Enforcement */
+  /* Ethereal Borderless Glow Panel */
   .ethereal-panel {
-    @apply bg-card border-none shadow-ambient;
+    background: rgba(3, 7, 18, 0.45);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    box-shadow: 0 12px 40px -10px rgba(0, 0, 0, 0.5);
   }
 
-  /* Floating Glassmorphism Rule */
+  /* Advanced Glassmorphism */
   .glass-panel {
-    @apply bg-white/5 backdrop-blur-[12px] saturate-[180%] shadow-elevated;
+    background: rgba(6, 11, 25, 0.65);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    box-shadow: 0 16px 48px -8px rgba(0, 0, 0, 0.6);
   }
+  
   .glass-panel-hover {
-    @apply transition-colors duration-200 hover:bg-[#36166b]/15;
+    @apply transition-all duration-300;
+  }
+  .glass-panel-hover:hover {
+    background: rgba(106, 95, 193, 0.08);
+    border-color: rgba(106, 95, 193, 0.25);
+    box-shadow: 0 16px 48px -8px rgba(106, 95, 193, 0.15);
   }
 
-  /* Node Element Glow */
+  /* Node Element Styling */
   .node-panel {
-    @apply bg-white/10 backdrop-blur-[12px] border border-ghost-border shadow-elevated rounded-lg p-4;
+    background: rgba(8, 14, 28, 0.85);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.5);
+    border-radius: 14px;
+    transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .node-panel:hover {
+    border-color: rgba(194, 239, 78, 0.25);
+    box-shadow: 0 15px 35px -8px rgba(0, 0, 0, 0.6), 0 0 16px rgba(194, 239, 78, 0.05);
   }
   .node-panel-active {
-    @apply shadow-node-active border-[#7eabfc];
+    border-color: var(--theme-color, #C2EF4E) !important;
+    box-shadow: 0 20px 40px -12px rgba(0, 0, 0, 0.7), 0 0 24px rgba(194, 239, 78, 0.15) !important;
   }
 
   /* Custom Panel Scrollbar styling */

@@ -1,233 +1,123 @@
-# DesignDB — Data Flow Documentation
+## System Workflow: DesignDB Architecture
 
-**Milestone:** M3 — Data Cleaning & Preparation  
-**Project:** DesignDB — AI-Integrated Relational Database Designer  
-**Domain:** DesignDB's own application database (meta-schema)
+The **DesignDB** platform operates as a multi-tier SaaS application designed to translate human natural language into fully functional, normalized relational databases and interactive Entity-Relationship Diagrams (ERDs).
 
----
+### 1. How User Requirements Are Received
+The user inputs their database requirements using a natural language prompt via the application's central text interface (e.g., "Build an e-commerce platform with users, products, orders, and reviews"). The Next.js frontend captures this input and sends it to our orchestration backend.
 
-## Overview
+### 2. How Schemas Are Generated
+The orchestration layer sends the prompt to an advanced Large Language Model (Groq / Llama 3) via an API Route. The LLM acts as an AI Database Architect, extracting entities, attributes, and relationships. It returns a strict, structured JSON payload representing the initial schema design.
 
-DesignDB is a web application that converts natural language into normalized database schemas with visual ER diagrams. The application itself runs on a relational database — **this document describes that internal database**, the data it stores, and how data flows through the system.
+### 3. How Normalization is Handled
+Normalization is programmatically enforced in our execution scripts:
+*   **1NF (First Normal Form):** Ensures all attributes are atomic and single-valued.
+*   **2NF (Second Normal Form):** Ensures all non-key attributes are fully functionally dependent on the primary key (no partial dependencies).
+*   **3NF (Third Normal Form):** Resolves transitive dependencies, ensuring non-key attributes do not depend on other non-key attributes.
+If the AI output violates these forms (e.g., putting 'CustomerAddress' in an 'Order' table instead of linking it), the validation engine corrects it before returning the JSON payload.
 
-Because DesignDB generates custom ERDs for users, the most authentic demonstration of M3 competencies is using **DesignDB's own data model** as the subject domain.
+### 4. How ER Diagrams Are Created
+The validated JSON schema is parsed and transformed into **Mermaid.js** syntax by the backend. This syntax is passed back to the React frontend, where `dagre` and `@xyflow/react` (ReactFlow) map the tables, foreign keys, and columns into a dynamic, drag-and-drop 2D visual canvas.
 
----
+### 5. How SQL Scripts Are Exported
+Users can select their desired SQL dialect (PostgreSQL, MySQL, SQLite) in the settings. Our custom `export_sql` script translates the internal JSON representation into standard DDL (`CREATE TABLE` statements, `PRIMARY KEY` definitions, and `FOREIGN KEY` constraints), which the user can immediately download as a `.sql` file.
 
-## Database Schema (6 Tables)
-
-```
-users
-  └──< projects          (one user → many projects)
-         └──< schemas    (one project → many schema versions)
-                ├──< entities        (one schema → many tables)
-                │      └──< attributes   (one entity → many columns)
-                └──< relationships   (one schema → many FK relationships)
-```
-
----
-
-## Table Descriptions & Normalization Status
-
-### 1. `users`
-Stores DesignDB user accounts.
-
-| Column | Type | Notes |
-|--------|------|-------|
-| `user_id` | INTEGER PK | Auto-increment surrogate key |
-| `username` | VARCHAR(255) | Unique login handle |
-| `email` | VARCHAR(255) | Unique, NOT NULL |
-| `full_name` | VARCHAR(255) | Display name |
-| `role` | VARCHAR(50) | `admin`, `designer`, `viewer`, `editor` |
-| `created_at` | TIMESTAMP | Account registration time |
-| `is_active` | BOOLEAN | Soft-delete flag |
-
-**Normalization:** 3NF ✅ — All attributes depend solely on `user_id`. No partial or transitive dependencies.
+### 6. Data Flow from Input to Output
+`User Prompt → Groq API (JSON) → Normalization Engine → Prisma/PostgreSQL (Cloud Save) → ReactFlow (Visual ERD) → SQL/PNG Export`
 
 ---
 
-### 2. `projects`
-An ERD design project created by a user.
+## Milestone 2: Schema Normalization & ERD Updates
 
-| Column | Type | Notes |
-|--------|------|-------|
-| `project_id` | INTEGER PK | |
-| `user_id` | INTEGER FK → `users` | Owner of the project |
-| `title` | VARCHAR(255) | Project name |
-| `description` | TEXT | Summary of the domain |
-| `is_public` | BOOLEAN | Visibility flag |
-| `created_at` | TIMESTAMP | |
-| `updated_at` | TIMESTAMP | Last edit time |
+The internal database running **DesignDB** itself requires persistent storage for user projects. The schema consists of two core tables: `User` and `Project`.
 
-**Normalization:** 3NF ✅ — `user_id` is a FK, not a transitive determinant. No anomalies.
+### Justification & Normalization (1NF to 3NF)
+*   **User Table:** Stores unique user identities (`id`, `email`). This is in 3NF because `email` depends directly and solely on the primary key `id`.
+*   **Project Table:** Stores ReactFlow canvas states.
+    *   **1NF:** All fields (`id`, `title`, `rawPrompt`, `nodesJson`, `edgesJson`) are atomic at the application level.
+    *   **2NF:** The primary key is a single column (`id`), eliminating partial dependency risks.
+    *   **3NF:** `userId` acts as a Foreign Key linking to `User`. There are no transitive dependencies (e.g., we do not store the User's email inside the Project table).
+
+*(Note: The ERD visualization is handled by the application itself and saved in the repository).*
 
 ---
 
-### 3. `schemas`
-A versioned database schema within a project. A project can have multiple schema versions (e.g., `v1_draft`, `v3_final`).
+## Milestone 3: Dataset Preparation & Dataflow Description
 
-| Column | Type | Notes |
-|--------|------|-------|
-| `schema_id` | INTEGER PK | |
-| `project_id` | INTEGER FK → `projects` | Parent project |
-| `schema_name` | VARCHAR(255) | Version label |
-| `version` | INTEGER | Iteration number |
-| `is_normalized` | BOOLEAN | Set to `TRUE` after 3NF pass |
-| `dialect` | VARCHAR(50) | `postgresql`, `mysql`, `sqlite` |
-| `created_at` | TIMESTAMP | |
+### Dataflow Description
+When a user clicks **"Save to Cloud"**, the frontend extracts the exact visual state of the ERD (`nodes` and `edges`) using ReactFlow's internal hooks. This data is structured into a JSON payload and sent via a `POST` request to `/api/projects/save`. 
 
-**Normalization:** 3NF ✅
+The Next.js backend intercepts this request, uses the **Prisma ORM**, and performs an UPSERT operation on the `User` table (ensuring the user exists) followed by an INSERT into the `Project` table. The data is physically stored in a pooled **Supabase PostgreSQL** instance.
+
+### Synthetic Data (Dummy Data)
+Because this is a schema generator, the "dataset" consists of JSON-serialized ReactFlow graphs. Dummy datasets were generated by interacting with the canvas, dragging tables, and saving them.
+We export CSVs programmatically from our Supabase dashboard to verify data ingestion.
 
 ---
 
-### 4. `entities`
-A database table (entity) defined within a schema.
+## Milestone 4: DDL Scripts (CREATE TABLE Statements)
 
-| Column | Type | Notes |
-|--------|------|-------|
-| `entity_id` | INTEGER PK | |
-| `schema_id` | INTEGER FK → `schemas` | Parent schema |
-| `entity_name` | VARCHAR(255) | Table name (e.g., `Order`, `Product`) |
-| `description` | TEXT | Purpose of the table |
-| `estimated_row_count` | INTEGER | Row count hint for data generation |
+The following DDL statements describe our persistent storage in Supabase:
 
-**Normalization:** 3NF ✅
+\`\`\`sql
+-- CreateTable: User
+CREATE TABLE "User" (
+    "id" TEXT NOT NULL,
+    "email" TEXT NOT NULL,
+    CONSTRAINT "User_pkey" PRIMARY KEY ("id")
+);
 
----
+-- CreateIndex: User_email_key
+CREATE UNIQUE INDEX "User_email_key" ON "User"("email");
 
-### 5. `attributes`
-A column within an entity.
+-- CreateTable: Project
+CREATE TABLE "Project" (
+    "id" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "title" TEXT NOT NULL,
+    "rawPrompt" TEXT,
+    "nodesJson" JSONB NOT NULL,
+    "edgesJson" JSONB NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "Project_pkey" PRIMARY KEY ("id")
+);
 
-| Column | Type | Notes |
-|--------|------|-------|
-| `attribute_id` | INTEGER PK | |
-| `entity_id` | INTEGER FK → `entities` | Parent entity |
-| `attr_name` | VARCHAR(255) | Column name |
-| `data_type` | VARCHAR(100) | `INTEGER`, `VARCHAR(255)`, etc. |
-| `is_primary_key` | BOOLEAN | |
-| `is_nullable` | BOOLEAN | |
-| `is_unique` | BOOLEAN | |
-| `default_value` | VARCHAR(255) | Optional default |
-
-**Normalization:** 3NF ✅ — `entity_id` is FK, all other fields depend solely on `attribute_id`.
-
----
-
-### 6. `relationships`
-A foreign key relationship between two entities within a schema.
-
-| Column | Type | Notes |
-|--------|------|-------|
-| `relationship_id` | INTEGER PK | |
-| `schema_id` | INTEGER FK → `schemas` | Scope of the relationship |
-| `from_entity_id` | INTEGER FK → `entities` | Child table (holds the FK) |
-| `to_entity_id` | INTEGER FK → `entities` | Parent table (holds the PK) |
-| `rel_type` | VARCHAR(50) | `one-to-many`, `many-to-one`, etc. |
-| `foreign_key` | VARCHAR(255) | Column name in `from_entity` |
-| `referenced_key` | VARCHAR(255) | Column name in `to_entity` |
-| `on_delete` | VARCHAR(20) | `CASCADE`, `RESTRICT`, etc. |
-| `on_update` | VARCHAR(20) | `CASCADE`, `RESTRICT`, etc. |
-
-**Normalization:** 3NF ✅
+-- AddForeignKey
+ALTER TABLE "Project" 
+ADD CONSTRAINT "Project_userId_fkey" 
+FOREIGN KEY ("userId") REFERENCES "User"("id") 
+ON DELETE RESTRICT ON UPDATE CASCADE;
+\`\`\`
 
 ---
 
-## Data Flow Diagram
+## Milestone 5: Database Population & Validation Queries
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                          INPUT LAYER                                │
-│                                                                     │
-│  User types natural language:                                       │
-│  "I need a library system with books, authors, and borrowers"       │
-└────────────────────────────┬────────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      PROCESSING LAYER                               │
-│                                                                     │
-│  1. analyse_requirements.ts                                         │
-│     └── Gemini API extracts entities, attributes, relationships     │
-│     └── Output: JSON Schema (validated with Zod)                    │
-│                                                                     │
-│  2. normalize_schema.ts                                             │
-│     └── 1NF pass: atomicity, PK injection                          │
-│     └── 2NF pass: partial dependency elimination                    │
-│     └── 3NF pass: transitive dependency elimination                 │
-│     └── Output: Normalized JSON Schema + report                     │
-│                                                                     │
-│  3. generate_mermaid.ts                                             │
-│     └── Converts schema to Mermaid.js erDiagram syntax             │
-│     └── Output: .mmd string → rendered on Canvas                   │
-└────────────────────────────┬────────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                       STORAGE LAYER                                 │
-│                                                                     │
-│  DesignDB Application Database (this document's subject):           │
-│                                                                     │
-│  users → projects → schemas ──┬──> entities → attributes           │
-│                               └──> relationships                    │
-│                                                                     │
-│  Seed Data (data/csv/):                                             │
-│    users.csv         60 rows                                        │
-│    projects.csv      80 rows                                        │
-│    schemas.csv       75 rows                                        │
-│    entities.csv      90 rows                                        │
-│    attributes.csv   100 rows                                        │
-│    relationships.csv 70 rows                                        │
-│                                                                     │
-│    Total: 475 rows across 6 normalized tables                       │
-└────────────────────────────┬────────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                        OUTPUT LAYER                                 │
-│                                                                     │
-│  1. Visual ERD on Canvas (React Flow + TableNode components)        │
-│  2. SQL DDL export (export_sql.ts → PostgreSQL / MySQL / SQLite)    │
-│  3. Normalization report (Markdown, auto-generated)                 │
-│  4. Downloadable .mmd / .sql / .png files                          │
-└─────────────────────────────────────────────────────────────────────┘
-```
+To simulate user activity and validate our deployment, we executed the following population and validation operations via Prisma and raw SQL:
 
----
+### Data Ingestion (INSERT)
+\`\`\`sql
+INSERT INTO "User" ("id", "email") 
+VALUES ('demo-user-id', 'demo@designdb.app');
 
-## Data Cleaning Steps Applied
+INSERT INTO "Project" ("id", "userId", "title", "rawPrompt", "nodesJson", "edgesJson", "updatedAt") 
+VALUES ('proj_123', 'demo-user-id', 'My First E-Commerce DB', 'E-commerce with users', '[]', '[]', NOW());
+\`\`\`
 
-Since this is synthetic application data (not raw/imported data), cleaning was performed at generation time via `execution/generate_seed_data.ts`:
-
-| Cleaning Step | Action |
-|---------------|--------|
-| **No NULL PKs** | All PKs are sequential integers; no gaps |
-| **FK integrity** | Child rows reference only valid parent PKs (modular arithmetic) |
-| **No duplicate emails** | Emails constructed as `first.last{i}@domain` — unique by construction |
-| **No orphaned entities** | Every `entity` maps to an existing `schema`; every `schema` maps to an existing `project` |
-| **Consistent date ordering** | `created_at` < `updated_at` enforced by offset arithmetic |
-| **Role constraints** | Only allowed values: `admin`, `designer`, `viewer`, `editor` |
-| **Boolean normalization** | Stored as `0`/`1` for SQLite compatibility |
-
----
-
-## Seed Data Statistics
-
-| Table | Rows | FK References |
-|-------|------|---------------|
-| `users` | 60 | None (root table) |
-| `projects` | 80 | → `users` |
-| `schemas` | 75 | → `projects` |
-| `entities` | 90 | → `schemas` |
-| `attributes` | 100 | → `entities` |
-| `relationships` | 70 | → `schemas`, `entities` (×2) |
-| **Total** | **475** | |
-
----
-
-## Generated By
-
-```
-execution/generate_seed_data.ts
-Run: npx ts-node execution/generate_seed_data.ts
-Output: data/csv/*.csv
-```
+### Validation Queries
+1.  **Row Count Check:**
+    \`\`\`sql
+    SELECT COUNT(*) FROM "Project"; -- Verifies ingestion success
+    \`\`\`
+2.  **Foreign Key Integrity Check:**
+    \`\`\`sql
+    SELECT p.id, p.title, u.email 
+    FROM "Project" p 
+    JOIN "User" u ON p."userId" = u.id;
+    -- Ensures no orphaned projects exist without a valid user
+    \`\`\`
+3.  **NULL Value Verification:**
+    \`\`\`sql
+    SELECT COUNT(*) FROM "Project" WHERE "nodesJson" IS NULL;
+    -- Returns 0, verifying our NOT NULL constraints are active and ReactFlow states are securely saved.
+    \`\`\`

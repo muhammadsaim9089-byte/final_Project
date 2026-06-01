@@ -21,16 +21,16 @@ import dagre from 'dagre';
 
 import { FloatingHeader } from "./FloatingHeader";
 import { RightSidebar } from "./RightSidebar";
+import { LeftSidebar } from "./LeftSidebar";
 import { TableNode } from "./Nodes/TableNode";
 import { PulseEdge } from "./Edges/PulseEdge";
 import { CrowsFootEdge } from "./Edges/CrowsFootEdge";
 import { HoverProvider } from "./HoverContext";
 import { FloatingDock } from "../ui/floating-dock";
-import { IterativeCommandBar } from "./IterativeCommandBar";
 import { BottomPanel } from "./BottomPanel";
 import { DataTypesPanel } from "./DataTypesPanel";
 import { CursorDotGrid } from "./CursorDotGrid";
-import { Database, LayoutTemplate, Cable, ArrowLeftRight, Component, Loader2 } from "lucide-react";
+import { Database, LayoutTemplate, Cable, Component, Loader2, PlusSquare } from "lucide-react";
 
 const nodeTypes = {
   tableMode: TableNode,
@@ -98,7 +98,6 @@ export function Canvas() {
 
   // Dock toggle states
   const [showSidebar, setShowSidebar] = useState(true);
-  const [showBottomPanel, setShowBottomPanel] = useState(false);
   const [showDataTypes, setShowDataTypes] = useState(false);
   const [layoutDirection, setLayoutDirection] = useState<'LR' | 'TB'>('LR');
   const [edgeStyle, setEdgeStyle] = useState<'crowsFoot' | 'pulseMode'>('crowsFoot');
@@ -140,12 +139,14 @@ export function Canvas() {
     setEdges(eds => eds.map(e => ({ ...e, type: newStyle })));
   }, [edgeStyle, setEdges]);
 
+  const [showLeftSidebar, setShowLeftSidebar] = useState(false);
+
   const dockItems = [
-    { title: "Components",    href: "#", icon: <Component size={20} />,      onClick: () => setShowSidebar(p => !p),     isActive: showSidebar },
+    { title: "Add Elements",  href: "#", icon: <PlusSquare size={20} />,    onClick: () => setShowLeftSidebar(p => !p), isActive: showLeftSidebar },
+    { title: "Inspector",     href: "#", icon: <Component size={20} />,      onClick: () => setShowSidebar(p => !p),     isActive: showSidebar },
     { title: "Layouts",       href: "#", icon: <LayoutTemplate size={20} />,  onClick: handleLayoutToggle,                isActive: layoutDirection === 'TB' },
     { title: "Data Types",    href: "#", icon: <Database size={20} />,        onClick: () => setShowDataTypes(p => !p),    isActive: showDataTypes },
     { title: "Relationships", href: "#", icon: <Cable size={20} />,           onClick: handleEdgeToggle,                  isActive: edgeStyle === 'pulseMode' },
-    { title: "Mappings",      href: "#", icon: <ArrowLeftRight size={20} />,  onClick: () => setShowBottomPanel(p => !p),  isActive: showBottomPanel },
   ];
 
   useEffect(() => {
@@ -307,6 +308,8 @@ export function Canvas() {
         generatedSql={generatedSql}
         generatedMermaid={generatedMermaid}
         rfInstance={rfInstance}
+        onSubmitPrompt={(prompt) => generateSchema(prompt, rawSchemaContext)}
+        isGenerating={showProgressOverlay}
       />
 
       {/* SVG Definitions for Crow's Foot Markers */}
@@ -395,11 +398,16 @@ export function Canvas() {
           </div>
         </HoverProvider>
 
-        <IterativeCommandBar 
-           onSubmit={(prompt) => generateSchema(prompt, rawSchemaContext)} 
-           isGenerating={showProgressOverlay} 
-        />
-        
+        {showLeftSidebar && (
+          <LeftSidebar
+            nodes={nodes}
+            setNodes={setNodes}
+            onAutoLayout={handleAutoLayout}
+            autoLayout={false}
+            onClose={() => setShowLeftSidebar(false)}
+          />
+        )}
+
         {showSidebar && (
           <RightSidebar
             nodes={nodes}
@@ -413,16 +421,13 @@ export function Canvas() {
           />
         )}
 
-        {showBottomPanel && (
-          <BottomPanel
-            isSqlOpen={isSqlOpen}
-            setIsSqlOpen={setIsSqlOpen}
-            isReviewsOpen={isReviewsOpen}
-            setIsReviewsOpen={setIsReviewsOpen}
-            sql={generatedSql}
-            showSidebar={showSidebar}
-          />
-        )}
+        <BottomPanel
+          isSqlOpen={isSqlOpen}
+          setIsSqlOpen={setIsSqlOpen}
+          isReviewsOpen={isReviewsOpen}
+          setIsReviewsOpen={setIsReviewsOpen}
+          sql={generatedSql}
+        />
 
         {showDataTypes && (
           <DataTypesPanel onClose={() => setShowDataTypes(false)} />

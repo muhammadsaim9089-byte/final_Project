@@ -1,6 +1,7 @@
 "use client";
 
-import { X } from "lucide-react";
+import { useState } from "react";
+import { X, Search, BookOpen } from "lucide-react";
 
 const DATA_TYPES = [
   { type: "INT",          desc: "Whole numbers",       pg: "INTEGER",      mysql: "INT",         sqlite: "INTEGER" },
@@ -20,55 +21,118 @@ interface DataTypesPanelProps {
 }
 
 export function DataTypesPanel({ onClose }: DataTypesPanelProps) {
+  const [search, setSearch] = useState("");
+
+  const filteredTypes = DATA_TYPES.filter(
+    (dt) =>
+      dt.type.toLowerCase().includes(search.toLowerCase()) ||
+      dt.desc.toLowerCase().includes(search.toLowerCase())
+  );
+
   return (
-    <div className="absolute left-24 top-1/2 -translate-y-1/2 z-50 w-[420px] max-h-[70vh] overflow-hidden rounded-xl border border-white/[0.08] bg-[#090C15]/95 backdrop-blur-xl shadow-[0_16px_64px_rgba(0,0,0,0.6)]">
+    <div className="absolute left-6 top-1/2 -translate-y-1/2 z-50 w-[460px] max-h-[75vh] overflow-hidden rounded-2xl border border-white/[0.08] bg-[#060B15]/95 backdrop-blur-xl shadow-[0_24px_64px_rgba(0,0,0,0.75)] flex flex-col animate-in fade-in slide-in-from-left-6 duration-300 pointer-events-auto">
       
       {/* Header */}
-      <div className="flex items-center justify-between px-5 py-3 border-b border-white/[0.06]">
-        <div>
-          <h3 className="text-sm font-semibold text-white tracking-tight">Data Type Reference</h3>
-          <span className="text-[9px] text-white/30 font-mono tracking-[0.18em] uppercase">SQL Dialect Mapping</span>
+      <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06] shrink-0">
+        <div className="flex items-center gap-2.5">
+          <div className="p-1.5 rounded-lg bg-purple-500/10 border border-purple-500/20 text-purple-400">
+            <BookOpen size={15} />
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-white tracking-tight">Data Type Reference</h3>
+            <span className="text-[9px] text-white/30 font-mono tracking-[0.18em] uppercase">SQL Dialect Mapping</span>
+          </div>
         </div>
         <button
           onClick={onClose}
-          className="p-1.5 rounded-md text-white/30 hover:text-white hover:bg-white/[0.06] transition-all"
+          className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/[0.06] transition-all"
         >
-          <X size={14} />
+          <X size={15} />
         </button>
       </div>
 
-      {/* Table Header */}
-      <div className="grid grid-cols-[1fr_0.8fr_0.8fr_0.8fr] gap-px px-5 py-2 border-b border-white/[0.04] text-[9px] font-mono text-white/25 tracking-[0.15em] uppercase">
-        <span>Type</span>
-        <span>PostgreSQL</span>
-        <span>MySQL</span>
-        <span>SQLite</span>
+      {/* Interactive Search Bar */}
+      <div className="px-6 py-3 border-b border-white/[0.04] bg-white/[0.01] shrink-0">
+        <div className="relative flex items-center">
+          <Search size={13} className="absolute left-3 text-white/30" />
+          <input
+            type="text"
+            placeholder="Search data types (e.g., INT, VARCHAR)..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full bg-[#0E1524]/60 border border-white/[0.06] rounded-xl pl-9 pr-4 py-2 text-xs text-white placeholder-white/20 focus:outline-none focus:border-purple-500/40 focus:bg-[#0E1524]/90 transition-all font-sans"
+          />
+          {search && (
+            <button
+              onClick={() => setSearch("")}
+              className="absolute right-3 text-[10px] text-white/40 hover:text-white"
+            >
+              Clear
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* Rows */}
-      <div className="overflow-y-auto max-h-[50vh] p-scrollbar">
-        {DATA_TYPES.map((dt, i) => (
-          <div
-            key={dt.type}
-            className={`grid grid-cols-[1fr_0.8fr_0.8fr_0.8fr] gap-px px-5 py-2.5 text-xs transition-colors hover:bg-white/[0.03] ${
-              i % 2 === 0 ? "bg-transparent" : "bg-white/[0.01]"
-            }`}
-          >
-            <div className="flex flex-col">
-              <span className="text-lime-green font-mono font-medium text-[11px]">{dt.type}</span>
-              <span className="text-white/30 text-[10px] mt-0.5">{dt.desc}</span>
+      {/* Grid Headers */}
+      <div className="grid grid-cols-[1.2fr_1fr_1fr_1fr] gap-4 px-6 py-2.5 border-b border-white/[0.04] text-[9px] font-mono text-white/25 tracking-[0.15em] uppercase bg-white/[0.005] shrink-0">
+        <span>Type</span>
+        <span className="text-purple-400/80 font-bold">PostgreSQL</span>
+        <span className="text-orange-400/80 font-bold">MySQL</span>
+        <span className="text-sky-400/80 font-bold">SQLite</span>
+      </div>
+
+      {/* Scrollable rows */}
+      <div className="flex-1 overflow-y-auto p-scrollbar divide-y divide-white/[0.02]">
+        {filteredTypes.length > 0 ? (
+          filteredTypes.map((dt, i) => (
+            <div
+              key={dt.type}
+              className={`grid grid-cols-[1.2fr_1fr_1fr_1fr] gap-4 px-6 py-3 text-xs transition-colors hover:bg-white/[0.03] ${
+                i % 2 === 0 ? "bg-transparent" : "bg-white/[0.01]"
+              }`}
+            >
+              {/* Type Name & Desc */}
+              <div className="flex flex-col pr-2 justify-center">
+                <span className="text-lime-green font-mono font-semibold text-[11px] tracking-wide">{dt.type}</span>
+                <span className="text-white/40 text-[10px] mt-0.5 leading-snug">{dt.desc}</span>
+              </div>
+              
+              {/* PG */}
+              <div className="self-center">
+                <span className="inline-block px-1.5 py-0.5 rounded font-mono text-[10px] bg-purple-950/20 border border-purple-500/10 text-purple-300/90 truncate max-w-full">
+                  {dt.pg}
+                </span>
+              </div>
+
+              {/* MySQL */}
+              <div className="self-center">
+                <span className="inline-block px-1.5 py-0.5 rounded font-mono text-[10px] bg-orange-950/20 border border-orange-500/10 text-orange-300/90 truncate max-w-full">
+                  {dt.mysql}
+                </span>
+              </div>
+
+              {/* SQLite */}
+              <div className="self-center">
+                <span className="inline-block px-1.5 py-0.5 rounded font-mono text-[10px] bg-sky-950/20 border border-sky-500/10 text-sky-300/90 truncate max-w-full">
+                  {dt.sqlite}
+                </span>
+              </div>
             </div>
-            <span className="text-white/60 font-mono text-[11px] self-center">{dt.pg}</span>
-            <span className="text-white/60 font-mono text-[11px] self-center">{dt.mysql}</span>
-            <span className="text-white/60 font-mono text-[11px] self-center">{dt.sqlite}</span>
+          ))
+        ) : (
+          <div className="flex flex-col items-center justify-center py-10 px-6 text-center">
+            <span className="text-white/20 text-xs font-mono mb-1">No matching types found</span>
+            <span className="text-white/10 text-[10px]">Try typing another dialect keyword</span>
           </div>
-        ))}
+        )}
       </div>
 
       {/* Footer */}
-      <div className="px-5 py-2.5 border-t border-white/[0.04] text-[10px] text-white/20 font-mono">
-        Mappings from <span className="text-sentry-purple">export_sql.ts</span>
+      <div className="px-6 py-3 border-t border-white/[0.04] bg-[#040811]/90 flex justify-between items-center text-[10px] text-white/30 font-mono shrink-0">
+        <span>Mapped schemas: 10 standard categories</span>
+        <span>export_sql.ts</span>
       </div>
     </div>
   );
 }
+

@@ -1,0 +1,22 @@
+M5: Full PostgreSQL Cloud Integration & Advanced UI Interactivity
+
+Backend & Cloud Persistence
+- Integrated PostgreSQL database hosted on Supabase.
+- Installed and configured Prisma ORM (v5) for stable schema management and Next.js connection pooling.
+- Built non-blocking /api/projects/save API route to serialize and store ReactFlow workspace states (JSONB).
+
+Interactive Workspace Header
+- Save to Cloud Button: Updated with modern UI state feedback (changes to Loader, then Green Checkmark upon DB confirmation).
+- Validate (Play) Button: Upgraded with a simulated validation engine that verifies schema integrity (3NF, FKs) and provides animated success feedback.
+- Share Button: Implemented one-click magic link generation with clipboard integration and visual success states.
+
+Sidebar & Canvas Interactions
+- Creation Modes: Inputs, Transform, and Database buttons now reveal sub-forms allowing you to pre-configure and add new table nodes (with quick-add checkboxes and column spinners).
+- Selected Node CRUD: Clicking a node now populates the sidebar with its details. You can rename the node, duplicate it, delete it, and perform full CRUD on its attributes (inline rename, change type, toggle PK, delete).
+- Typography: Real dropdown implemented to change the global canvas font dynamically via CSS variables.
+- Table Theme: Clickable swatches that apply custom accent colors to the top borders of all table nodes on the canvas.
+- Settings Panel: Added functional controls for SQL Dialect selection, Auto-layout toggling, and global Node Opacity adjustment.
+
+Premium Interactive Canvas Background
+- Dot Grid Animation: Replaced the default ReactFlow background with a custom multi-layered CSS background featuring subtle, counter-directional drifting dots and a vignette for depth.
+- Cursor Spotlight (CursorDotGrid.tsx): Implemented a high-performance requestAnimationFrame canvas overlay that tracks the user's mouse. Dots within a 120px radius smoothly grow and glow lime-green (mix-blend-mode: screen), creating a highly tactile, premium feel without blocking interactions (pointer-events-none).

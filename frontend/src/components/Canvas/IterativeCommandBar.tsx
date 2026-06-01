@@ -16,12 +16,12 @@ export function IterativeCommandBar({ onSubmit, isGenerating }: Props) {
   };
 
   return (
-    <div className="absolute bottom-24 left-1/2 -translate-x-1/2 w-full max-w-2xl z-50 transition-all duration-300">
+    <div className="absolute bottom-16 left-1/2 -translate-x-1/2 w-full max-w-4xl z-50 transition-all duration-300">
       <div 
-        className="glass-panel p-2 rounded-2xl flex items-center gap-3 backdrop-blur-xl shadow-[0_12px_40px_rgba(0,0,0,0.4)] transition-all"
+        className="glass-panel p-3 rounded-2xl flex items-center gap-4 backdrop-blur-2xl shadow-[0_12px_60px_rgba(0,0,0,0.6)] transition-all"
         style={{
-           border: isGenerating ? "1px solid rgba(194, 239, 78, 0.4)" : "1px solid rgba(255,255,255,0.1)",
-           background: isGenerating ? "rgba(20, 25, 40, 0.85)" : "rgba(10, 15, 25, 0.75)"
+           border: isGenerating ? "1px solid rgba(194, 239, 78, 0.5)" : "1px solid rgba(255,255,255,0.15)",
+           background: isGenerating ? "rgba(20, 25, 40, 0.90)" : "rgba(10, 15, 25, 0.85)"
         }}
       >
         <div className={`flex items-center justify-center w-8 h-8 rounded-full shrink-0 ml-1 transition-colors ${isGenerating ? 'bg-lime-green/20 text-lime-green animate-pulse' : 'bg-sentry-purple/20 text-sentry-purple'}`}>
@@ -33,7 +33,7 @@ export function IterativeCommandBar({ onSubmit, isGenerating }: Props) {
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
           placeholder={isGenerating ? "Synthesizing changes..." : "Modify architecture (e.g. Add an audit log table)..."}
-          className="flex-1 bg-transparent text-sm text-white/90 placeholder:text-white/30 outline-none font-sans"
+          className="flex-1 bg-transparent text-base text-white/90 placeholder:text-white/40 outline-none font-sans"
           disabled={isGenerating}
         />
         <button

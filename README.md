@@ -1,5 +1,6 @@
+# final_Project
+
 <div align="center">
-  <img src="https://raw.githubusercontent.com/horizon1122star/designdb/main/assets/logo.png" alt="DesignDB Logo" width="120" onerror="this.style.display='none'">
   <h1>DesignDB</h1>
   <p><b>AI-Integrated Relational Database Designer</b></p>
   <p>Natural Language → 3NF Database Schema → ER Diagrams</p>
@@ -48,8 +49,8 @@ DesignDB uses a robust Agentic architecture to ensure >99% success rates on comp
 
 1. Clone the repository
    ```bash
-   git clone https://github.com/horizon1122star/designdb.git
-   cd designdb
+   git clone https://github.com/muhammadsaim9089-byte/final_Project.git
+   cd final_Project
    ```
 
 2. Install dependencies

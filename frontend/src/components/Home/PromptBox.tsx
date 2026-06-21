@@ -1,31 +1,19 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, Sparkles } from "lucide-react";
+import styled from "styled-components";
 import { CanvasLoader } from "./CanvasLoader";
-
-const PLACEHOLDER_PROMPTS = [
-  "A multi-tenant SaaS platform with users, workspaces, billing and audit logs...",
-  "An e-commerce system with products, orders, inventory and reviews...",
-  "A hospital management system with patients, doctors, appointments and records...",
-  "A social platform with users, posts, comments, likes and followers...",
-];
 
 export function PromptBox() {
   const router = useRouter();
   const [prompt, setPrompt] = useState("");
-  const [placeholderIdx, setPlaceholderIdx] = useState(0);
-  const [isFocused, setIsFocused] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  // Cycle placeholders
+  // Prefetch the canvas page on mount so chunks are ready before navigation
   useEffect(() => {
-    const interval = setInterval(() => {
-      setPlaceholderIdx((i) => (i + 1) % PLACEHOLDER_PROMPTS.length);
-    }, 3500);
-    return () => clearInterval(interval);
-  }, []);
+    router.prefetch("/canvas");
+  }, [router]);
 
   const handleSubmit = () => {
     if (!prompt.trim()) return;
@@ -34,11 +22,13 @@ export function PromptBox() {
   };
 
   const handleLoaderComplete = useCallback(() => {
-    router.push("/canvas");
+    // replace (not push) prevents browser back-button from returning to home
+    // during heavy canvas chunk loading, which caused the back-navigation loop
+    router.replace("/canvas");
   }, [router]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+    if (e.key === "Enter") {
       handleSubmit();
     }
   };
@@ -47,57 +37,24 @@ export function PromptBox() {
     <>
       {loading && <CanvasLoader onComplete={handleLoaderComplete} />}
 
-      <div className="w-full max-w-2xl mx-auto flex flex-col gap-4">
-        {/* Prompt container */}
-        <div
-          className="relative rounded-2xl transition-all duration-300 border"
-          style={{
-            background: "rgba(5,10,22,0.65)",
-            backdropFilter: "blur(24px)",
-            WebkitBackdropFilter: "blur(24px)",
-            borderColor: isFocused
-              ? "rgba(194,239,78,0.4)"
-              : "rgba(255,255,255,0.06)",
-            boxShadow: isFocused
-              ? "0 0 32px rgba(194,239,78,0.1), inset 0 0 24px rgba(255,255,255,0.02)"
-              : "0 12px 48px rgba(0,0,0,0.5)",
-          }}
-        >
-          {/* Sparkle icon */}
-          <div className="absolute top-4.5 left-4.5 text-lime-green/70 animate-pulse">
-            <Sparkles size={16} />
-          </div>
-
-          <textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            onFocus={() => setIsFocused(true)}
-            onBlur={() => setIsFocused(false)}
-            onKeyDown={handleKeyDown}
-            placeholder={PLACEHOLDER_PROMPTS[placeholderIdx]}
-            rows={4}
-            className="w-full bg-transparent text-white/90 text-sm leading-relaxed resize-none outline-none pl-11 pr-4.5 pt-4.5 pb-16 placeholder:text-white/20 transition-colors font-sans"
-          />
-
-          {/* Footer bar */}
-          <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-4.5 py-3.5 border-t border-white/[0.06]">
-            <span className="text-[10px] text-white/30 tracking-wide font-mono">
-              CTRL + ENTER to synthesize
-            </span>
-            <button
+      <div className="w-full max-w-2xl mx-auto flex flex-col items-center gap-6">
+        {/* Tailwind Prompt Wrapper */}
+        <div className="flex justify-center items-center w-full h-full bg-transparent font-sans">
+          <div className="group flex items-center w-fit min-w-[280px] bg-white/[0.06] border border-white/10 rounded-full backdrop-blur-md p-1.5 transition-all duration-300 hover:border-[#4f46e5] hover:shadow-[0_0_15px_rgba(79,70,229,0.2)] focus-within:shadow-[0_0_20px_rgba(79,70,229,0.4)] focus-within:border-[#4f46e5] focus-within:bg-white/[0.08]">
+            <input
+              type="text"
+              className="flex-1 w-full min-w-[240px] max-w-[400px] px-5 py-3 text-[15px] text-white bg-transparent border-none outline-none transition-all duration-300 placeholder:text-white/40 focus:min-w-[380px]"
+              placeholder="Ask AI anything..."
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              onKeyDown={handleKeyDown}
+            />
+            <button 
               onClick={handleSubmit}
               disabled={!prompt.trim()}
-              className="flex items-center gap-2 px-5 py-2 rounded-full text-xs font-bold tracking-wide transition-all duration-200 disabled:opacity-20 disabled:cursor-not-allowed cursor-pointer"
-              style={{
-                background: prompt.trim()
-                  ? "#C2EF4E"
-                  : "rgba(255,255,255,0.05)",
-                color: prompt.trim() ? "#030712" : "rgba(255,255,255,0.3)",
-                boxShadow: prompt.trim() ? "0 4px 16px rgba(194,239,78,0.25)" : "none",
-              }}
+              className="bg-[#4f46e5] border-none w-[38px] h-[38px] rounded-full cursor-pointer transition-all duration-300 flex justify-center items-center ml-2.5 hover:bg-[#6366f1] hover:shadow-[0_0_10px_rgba(99,102,241,0.5)] hover:-rotate-90 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Generate Schema
-              <ArrowRight size={13} />
+              <span className="text-white text-[16px]">➤</span>
             </button>
           </div>
         </div>

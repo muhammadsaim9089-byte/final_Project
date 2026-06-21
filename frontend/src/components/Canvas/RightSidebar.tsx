@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Settings, ChevronRight, Check, Trash2, Copy, Pencil, Plus, X, Key } from "lucide-react";
+import { Settings, ChevronRight, Check, Trash2, Copy, Pencil, Plus, X, Key, Database, LayoutGrid, Eye, Grid3x3 } from "lucide-react";
 import { Node, Edge } from "@xyflow/react";
 
 const SQL_TYPES = ["serial", "integer", "varchar(255)", "text", "boolean", "timestamp", "date", "float", "decimal", "uuid", "char(36)"];
@@ -29,9 +29,10 @@ interface RightSidebarProps {
   showGrid: boolean;
   setShowGrid: (show: boolean) => void;
   onAutoLayout: () => void;
+  onDeleteNode?: (id: string) => void;
 }
 
-export function RightSidebar({ nodes, setNodes, edges: _edges, setEdges, selectedNodeId, showGrid, setShowGrid, onAutoLayout }: RightSidebarProps) {
+export function RightSidebar({ nodes, setNodes, edges: _edges, setEdges, selectedNodeId, showGrid, setShowGrid, onAutoLayout, onDeleteNode }: RightSidebarProps) {
 
   // Editing state
   const [editingAttr, setEditingAttr] = useState<{idx:number,field:"name"|"type"}|null>(null);
@@ -42,7 +43,7 @@ export function RightSidebar({ nodes, setNodes, edges: _edges, setEdges, selecte
   // UI state
   const [fontOpen, setFontOpen] = useState(false);
   const [selectedFont, setSelectedFont] = useState("Vagnola Regular");
-  const [themeColor, setThemeColor] = useState("#C2EF4E");
+  const [themeColor, setThemeColor] = useState("#6A5FC1");
   const [showSettings, setShowSettings] = useState(false);
   const [sqlDialect, setSqlDialect] = useState("PostgreSQL");
   const [autoLayout, setAutoLayout] = useState(false);
@@ -131,8 +132,12 @@ export function RightSidebar({ nodes, setNodes, edges: _edges, setEdges, selecte
 
   const deleteNode = () => {
     if (!selectedNodeId) return;
-    setNodes((nds: Node[]) => nds.filter(n => n.id !== selectedNodeId));
-    setEdges((eds: Edge[]) => eds.filter(e => e.source !== selectedNodeId && e.target !== selectedNodeId));
+    if (onDeleteNode) {
+      onDeleteNode(selectedNodeId);
+    } else {
+      setNodes((nds: Node[]) => nds.filter(n => n.id !== selectedNodeId));
+      setEdges((eds: Edge[]) => eds.filter(e => e.source !== selectedNodeId && e.target !== selectedNodeId));
+    }
   };
 
   return (
@@ -140,7 +145,7 @@ export function RightSidebar({ nodes, setNodes, edges: _edges, setEdges, selecte
       {/* Header */}
       <div className="px-5 pt-5 pb-4">
         <h2 className="text-[15px] font-semibold flex items-center gap-1.5 tracking-tight">
-          <span className="text-lime-green drop-shadow-[0_0_8px_rgba(194,239,78,0.3)]">Inspector</span>
+          <span className="text-[#C9C8C7] drop-shadow-[0_0_8px_rgba(74,144,217,0.3)]">Inspector</span>
           <ChevronRight size={14} className="text-white/20" />
         </h2>
         <span className="text-[9px] text-white/40 font-mono tracking-[0.2em] uppercase mt-1 block">Properties</span>
@@ -162,10 +167,10 @@ export function RightSidebar({ nodes, setNodes, edges: _edges, setEdges, selecte
                     onChange={e => setNewNodeName(e.target.value)}
                     onKeyDown={e => e.key === "Enter" && renameNode()}
                     onBlur={renameNode}
-                    className="flex-1 bg-white/[0.06] border border-lime-green/40 rounded-lg px-2.5 py-1 text-[12px] text-lime-green font-mono outline-none focus:bg-white/[0.08]" 
+                    className="flex-1 bg-white/[0.06] border border-[#4A90D9]/40 rounded-lg px-2.5 py-1 text-[12px] text-[#C9C8C7] font-mono outline-none focus:bg-white/[0.08]" 
                   />
                 ) : (
-                  <span className="text-[13px] text-lime-green font-mono font-bold truncate drop-shadow-[0_0_6px_rgba(194,239,78,0.2)]">
+                  <span className="text-[13px] text-[#C9C8C7] font-mono font-bold truncate drop-shadow-[0_0_6px_rgba(74,144,217,0.2)]">
                     {selectedNode.data.label as string}
                   </span>
                 )}
@@ -211,7 +216,7 @@ export function RightSidebar({ nodes, setNodes, edges: _edges, setEdges, selecte
                         onChange={e => setEditValue(e.target.value)}
                         onKeyDown={e => { if (e.key === "Enter") { updateAttr(idx, "name", editValue); setEditingAttr(null); } }}
                         onBlur={() => { updateAttr(idx, "name", editValue); setEditingAttr(null); }}
-                        className="flex-1 bg-white/[0.06] border border-lime-green/30 rounded px-1.5 py-0.5 text-[11px] text-white font-mono outline-none" 
+                        className="flex-1 bg-white/[0.06] border border-[#4A90D9]/30 rounded px-1.5 py-0.5 text-[11px] text-white font-mono outline-none" 
                       />
                     ) : (
                       <span 
@@ -253,7 +258,7 @@ export function RightSidebar({ nodes, setNodes, edges: _edges, setEdges, selecte
 
               <button 
                 onClick={addAttr}
-                className="w-full flex items-center justify-center gap-1.5 py-2 border border-dashed border-white/[0.08] hover:border-lime-green/30 hover:bg-lime-green/5 rounded-lg text-[10px] text-white/40 hover:text-lime-green transition-all font-mono font-bold"
+                className="w-full flex items-center justify-center gap-1.5 py-2 border border-dashed border-white/[0.08] hover:border-[#4A90D9]/30 hover:bg-[#4A90D9]/5 rounded-lg text-[10px] text-white/40 hover:text-[#4A90D9] transition-all font-mono font-bold"
               >
                 <Plus size={11} /> Add Attribute
               </button>
@@ -283,7 +288,7 @@ export function RightSidebar({ nodes, setNodes, edges: _edges, setEdges, selecte
                   onClick={() => { setSelectedFont(f); setFontOpen(false); }}
                   className={`w-full flex items-center justify-between px-3 py-2 text-[11px] rounded-lg transition-all ${
                     selectedFont === f 
-                      ? "bg-lime-green/10 text-lime-green font-bold" 
+                      ? "bg-[#4A90D9]/10 text-[#4A90D9] font-bold" 
                       : "text-white/50 hover:bg-white/[0.04] hover:text-white"
                   }`}
                   style={{ fontFamily: f === "Vagnola Regular" ? "Vagnola, sans-serif" : f }}
@@ -296,72 +301,64 @@ export function RightSidebar({ nodes, setNodes, edges: _edges, setEdges, selecte
           )}
         </div>
 
-        {/* === TABLE THEME === */}
-        <div>
-          <span className="text-[9px] text-white/40 font-mono uppercase tracking-[0.18em] block mb-2.5">Table Theme</span>
-          <div className="flex gap-3 px-1">
-            {THEME_COLORS.map(tc => {
-              const isSelected = themeColor === tc.hex;
-              return (
-                <div 
-                  key={tc.name} 
-                  onClick={() => setThemeColor(tc.hex)}
-                  className={`w-7 h-7 rounded-lg ${tc.bg} cursor-pointer hover:scale-110 active:scale-95 transition-all ${
-                    isSelected 
-                      ? "ring-2 ring-white/40 ring-offset-2 ring-offset-[#060B15] shadow-[0_0_12px_rgba(255,255,255,0.15)]" 
-                      : "opacity-75 hover:opacity-100"
-                  }`} 
-                />
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
-      {/* === SETTINGS === */}
-      <div className="border-t border-white/[0.06] bg-white/[0.01] rounded-b-2xl">
-        <button 
-          onClick={() => setShowSettings(p => !p)}
-          className="w-full flex items-center gap-2.5 px-5 py-3.5 text-white/40 hover:text-white transition-colors group font-bold"
-        >
-          <Settings size={15} className="group-hover:rotate-45 transition-transform duration-300 text-lime-green" />
-          <span className="text-[12px] tracking-wide">Canvas Settings</span>
-          <ChevronRight size={12} className={`ml-auto transition-transform duration-200 ${showSettings ? "rotate-90" : ""} text-white/20`} />
-        </button>
-        
-        {showSettings && (
-          <div className="px-5 pb-5 space-y-3.5 animate-in fade-in duration-200">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] text-white/40 font-mono uppercase tracking-wider">SQL Dialect</span>
+        {/* === CANVAS SETTINGS === */}
+        <div className="space-y-2.5">
+          <span className="text-[9px] text-white/40 font-mono uppercase tracking-[0.18em] flex items-center gap-1.5 mb-2.5">
+            <Settings size={10} className="text-[#4A90D9] animate-spin-slow" /> Canvas Settings
+          </span>
+          <div className="bg-white/[0.02] rounded-xl border border-white/[0.06] overflow-hidden">
+            
+            {/* SQL Dialect */}
+            <div className="flex items-center justify-between py-3 px-3.5 border-b border-white/[0.04] transition-all hover:bg-white/[0.01]">
+              <div className="flex items-center gap-2">
+                <Database size={13} className="text-white/40" />
+                <span className="text-[11px] text-white/70 font-semibold tracking-wide">SQL Dialect</span>
+              </div>
               <div className="relative">
                 <select 
                   value={sqlDialect} 
                   onChange={e => setSqlDialect(e.target.value)}
-                  className="bg-[#050913] border border-white/[0.08] rounded-lg px-2.5 py-1 text-[10px] text-white/70 outline-none cursor-pointer focus:border-lime-green/30"
+                  className="bg-[#0A1020] border border-white/[0.08] hover:border-white/[0.16] hover:bg-[#121B30] rounded-lg px-2.5 py-1.5 text-[10px] text-white/80 outline-none cursor-pointer focus:border-[#4A90D9]/30 transition-all font-semibold font-sans"
                 >
-                  <option>PostgreSQL</option>
-                  <option>MySQL</option>
-                  <option>SQLite</option>
+                  <option value="PostgreSQL">PostgreSQL</option>
+                  <option value="MySQL">MySQL</option>
+                  <option value="SQLite">SQLite</option>
                 </select>
               </div>
             </div>
-            
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] text-white/40 font-mono uppercase tracking-wider">Auto-layout</span>
+
+            {/* Auto-layout */}
+            <div className="flex items-center justify-between py-3 px-3.5 border-b border-white/[0.04] transition-all hover:bg-white/[0.01]">
+              <div className="flex items-center gap-2">
+                <LayoutGrid size={13} className="text-white/40" />
+                <span className="text-[11px] text-white/70 font-semibold tracking-wide">Auto-layout</span>
+              </div>
               <button 
-                onClick={() => setAutoLayout(!autoLayout)}
-                className={`w-9 h-5 rounded-full transition-colors relative border border-white/[0.06] ${autoLayout ? "bg-lime-green" : "bg-white/5"}`}
+                onClick={() => {
+                  const newVal = !autoLayout;
+                  setAutoLayout(newVal);
+                  if (newVal) onAutoLayout();
+                }}
+                className={`w-9 h-5 rounded-full transition-all relative border border-white/[0.06] shadow-inner ${
+                  autoLayout ? "bg-[#4A90D9] border-[#4A90D9]/20" : "bg-white/5 hover:bg-white/10"
+                }`}
               >
-                <div className={`absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all ${
-                  autoLayout ? "left-[17px] bg-[#030712]" : "left-0.5 bg-white/40"
+                <div className={`absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all duration-300 ease-out shadow-[0_1px_3px_rgba(0,0,0,0.4)] ${
+                  autoLayout ? "left-[17px] bg-[#030712]" : "left-0.5 bg-white/60"
                 }`} />
               </button>
             </div>
-            
-            <div className="space-y-1">
+
+            {/* Opacity */}
+            <div className="py-3 px-3.5 border-b border-white/[0.04] space-y-2.5 transition-all hover:bg-white/[0.01]">
               <div className="flex items-center justify-between">
-                <span className="text-[10px] text-white/40 font-mono uppercase tracking-wider">Opacity</span>
-                <span className="text-[10px] text-lime-green font-mono font-bold">{nodeOpacity}%</span>
+                <div className="flex items-center gap-2">
+                  <Eye size={13} className="text-white/40" />
+                  <span className="text-[11px] text-white/70 font-semibold tracking-wide">Opacity</span>
+                </div>
+                <span className="text-[10px] text-[#C9C8C7] font-mono font-bold bg-[#4A90D9]/10 border border-[#4A90D9]/20 px-1.5 py-0.5 rounded">
+                  {nodeOpacity}%
+                </span>
               </div>
               <input 
                 type="range" 
@@ -369,23 +366,30 @@ export function RightSidebar({ nodes, setNodes, edges: _edges, setEdges, selecte
                 max="100" 
                 value={nodeOpacity} 
                 onChange={e => setNodeOpacity(parseInt(e.target.value))}
-                className="w-full accent-lime-green h-1 bg-white/10 rounded-lg cursor-pointer appearance-none" 
+                className="w-full accent-[#4A90D9] h-1 bg-white/10 rounded-lg cursor-pointer appearance-none outline-none focus:outline-none" 
               />
             </div>
-            
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] text-white/40 font-mono uppercase tracking-wider">Show Grid</span>
+
+            {/* Show Grid */}
+            <div className="flex items-center justify-between py-3 px-3.5 transition-all hover:bg-white/[0.01]">
+              <div className="flex items-center gap-2">
+                <Grid3x3 size={13} className="text-white/40" />
+                <span className="text-[11px] text-white/70 font-semibold tracking-wide">Show Grid</span>
+              </div>
               <button 
                 onClick={() => setShowGrid(!showGrid)}
-                className={`w-9 h-5 rounded-full transition-colors relative border border-white/[0.06] ${showGrid ? "bg-lime-green" : "bg-white/5"}`}
+                className={`w-9 h-5 rounded-full transition-all relative border border-white/[0.06] shadow-inner ${
+                  showGrid ? "bg-[#4A90D9] border-[#4A90D9]/20" : "bg-white/5 hover:bg-white/10"
+                }`}
               >
-                <div className={`absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all ${
-                  showGrid ? "left-[17px] bg-[#030712]" : "left-0.5 bg-white/40"
+                <div className={`absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all duration-300 ease-out shadow-[0_1px_3px_rgba(0,0,0,0.4)] ${
+                  showGrid ? "left-[17px] bg-[#030712]" : "left-0.5 bg-white/60"
                 }`} />
               </button>
             </div>
+
           </div>
-        )}
+        </div>
       </div>
     </div>
   );

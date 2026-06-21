@@ -17,7 +17,14 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
 
-    return NextResponse.json({ success: true, project }, { status: 200 });
+    // Parse stringified JSON fields back for SQLite consistency
+    const parsedProject = {
+      ...project,
+      nodesJson: JSON.parse(project.nodesJson as string),
+      edgesJson: JSON.parse(project.edgesJson as string),
+    };
+
+    return NextResponse.json({ success: true, project: parsedProject }, { status: 200 });
   } catch (error: any) {
     console.error("Fetch project error:", error);
     return NextResponse.json({ error: "Failed to fetch project" }, { status: 500 });

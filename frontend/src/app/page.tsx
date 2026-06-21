@@ -1,5 +1,4 @@
 import { VantaBackground } from "@/components/Home/VantaBackground";
-import { HomeNavbar } from "@/components/Home/HomeNavbar";
 import { PromptBox } from "@/components/Home/PromptBox";
 
 export const metadata = {
@@ -21,9 +20,6 @@ export default function HomePage() {
             "radial-gradient(ellipse 80% 60% at 50% 40%, transparent 0%, rgba(0,10,20,0.55) 100%)",
         }}
       />
-
-      {/* Navbar */}
-      <HomeNavbar />
 
       {/* Hero content */}
       <section className="flex-1 flex flex-col items-center justify-center px-6 pt-24 pb-16 gap-10">

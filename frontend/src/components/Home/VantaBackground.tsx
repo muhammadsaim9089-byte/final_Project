@@ -10,28 +10,33 @@ export function VantaBackground() {
     let mounted = true;
 
     async function initVanta() {
-      const THREE = await import("three");
-      // @ts-ignore - vanta has no types
-      const VANTA = await import("vanta/dist/vanta.fog.min");
+      try {
+        // @ts-ignore - three module types unresolved in current build target
+        const THREE = await import("three");
+        // @ts-ignore - vanta has no types
+        const VANTA = await import("vanta/dist/vanta.fog.min");
 
-      if (!mounted || !vantaRef.current) return;
+        if (!mounted || !vantaRef.current) return;
 
-      vantaEffect.current = VANTA.default({
-        el: vantaRef.current,
-        THREE,
-        mouseControls: true,
-        touchControls: true,
-        gyroControls: false,
-        minHeight: 200.0,
-        minWidth: 200.0,
-        highlightColor: 0x1e549f,
-        midtoneColor: 0x052c52,
-        lowlightColor: 0x000a14,
-        baseColor: 0x001220,
-        blurFactor: 0.52,
-        speed: 1.5,
-        zoom: 1.1,
-      });
+        vantaEffect.current = VANTA.default({
+          el: vantaRef.current,
+          THREE,
+          mouseControls: true,
+          touchControls: true,
+          gyroControls: false,
+          minHeight: 200.0,
+          minWidth: 200.0,
+          highlightColor: 0x1e549f,
+          midtoneColor: 0x052c52,
+          lowlightColor: 0x000a14,
+          baseColor: 0x001220,
+          blurFactor: 0.52,
+          speed: 1.5,
+          zoom: 1.1,
+        });
+      } catch (error) {
+        console.warn("Vanta.js WebGL context creation failed. Gracefully falling back to CSS gradient background.", error);
+      }
     }
 
     initVanta();
@@ -48,7 +53,7 @@ export function VantaBackground() {
   return (
     <div
       ref={vantaRef}
-      className="fixed inset-0 w-full h-full -z-10"
+      className="fixed inset-0 w-full h-full -z-10 bg-gradient-to-br from-[#001220] via-[#052c52] to-[#000a14]"
       aria-hidden="true"
     />
   );

@@ -167,7 +167,7 @@
   content: '';
   position: absolute;
   inset: -48px;
-  background-image: radial-gradient(circle, rgba(194, 239, 78, 0.15) 1px, transparent 1px);
+  background-image: radial-gradient(circle, rgba(80, 69, 168, 0.15) 1px, transparent 1px);
   background-size: 32px 32px;
 }
 
@@ -176,7 +176,7 @@
 }
 
 .animated-dot-grid::after {
-  background-image: radial-gradient(circle, rgba(106, 95, 193, 0.10) 1px, transparent 1px);
+  background-image: radial-gradient(circle, rgba(80, 69, 168, 0.10) 1px, transparent 1px);
   background-size: 64px 64px;
   animation: dotDrift 16s linear infinite reverse, dotPulse 6s ease-in-out infinite 2s;
 }

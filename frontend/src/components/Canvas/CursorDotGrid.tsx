@@ -87,11 +87,11 @@ export function CursorDotGrid() {
 
       // Only draw if somewhat visible
       if (dot.currentOpacity > 0.01) {
-        // Lime-green glow for dots near cursor, neutral white for distant
+        // Custom purple glow (#5045a8) for dots near cursor, neutral white for distant
         const intensity = (dot.currentOpacity - MIN_OPACITY) / (MAX_OPACITY - MIN_OPACITY);
-        const r = Math.round(194 * intensity + 255 * (1 - intensity));
-        const g = Math.round(239 * intensity + 255 * (1 - intensity));
-        const b = Math.round(78 * intensity + 255 * (1 - intensity));
+        const r = Math.round(80 * intensity + 255 * (1 - intensity));
+        const g = Math.round(69 * intensity + 255 * (1 - intensity));
+        const b = Math.round(168 * intensity + 255 * (1 - intensity));
 
         ctx.beginPath();
         ctx.arc(dot.x, dot.y, dot.currentSize, 0, Math.PI * 2);

@@ -151,14 +151,14 @@ function apply2NF(schema: Schema, logs: string[]): { schema: Schema, changed: bo
       }
     }
 
-    for (const [pkColName, partialAttrs] of partialGroups) {
+    partialGroups.forEach((partialAttrs, pkColName) => {
       const pkCol = pkAttrs.find(a => a.name === pkColName)!;
       const stem = pkColName.replace(/_id$/, '');
       const newEntityName = `${stem}`;
 
       // Avoid duplicating an entity that already exists
       if (schema.entities.find(e => e.name === newEntityName) || newEntities.find(e => e.name === newEntityName)) {
-        continue;
+        return;
       }
 
       const newEntity: Entity = {
@@ -166,7 +166,7 @@ function apply2NF(schema: Schema, logs: string[]): { schema: Schema, changed: bo
         description: `2NF decomposition: attributes partially dependent on '${pkColName}'`,
         attributes: [
           { name: pkColName, dataType: pkCol.dataType, isPrimaryKey: true, isNullable: false, isUnique: true },
-          ...partialAttrs.map(a => ({ ...a, isPrimaryKey: false }))
+          ...partialAttrs.map((a: Attribute) => ({ ...a, isPrimaryKey: false }))
         ]
       };
 
@@ -182,12 +182,12 @@ function apply2NF(schema: Schema, logs: string[]): { schema: Schema, changed: bo
       });
 
       // Remove the migrated attributes from the original entity
-      const migratedNames = new Set(partialAttrs.map(a => a.name));
+      const migratedNames = new Set(partialAttrs.map((a: Attribute) => a.name));
       entity.attributes = entity.attributes.filter(a => !migratedNames.has(a.name));
 
-      logs.push(`[2NF] Decomposed partial dependency: moved [${partialAttrs.map(a => a.name).join(', ')}] from '${entity.name}' into new table '${newEntityName}' (dependent on '${pkColName}')`);
+      logs.push(`[2NF] Decomposed partial dependency: moved [${partialAttrs.map((a: Attribute) => a.name).join(', ')}] from '${entity.name}' into new table '${newEntityName}' (dependent on '${pkColName}')`);
       changed = true;
-    }
+    });
   }
 
   schema.entities.push(...newEntities);
@@ -272,24 +272,24 @@ function apply3NF(schema: Schema, logs: string[], strictMode?: boolean): { schem
     if (strictMode) {
       const prefixGroups = detectPrefixClusters(nonKeyAttrs);
 
-      for (const [prefix, group] of prefixGroups) {
+      prefixGroups.forEach((group, prefix) => {
         // The group must contain an _id or _code that acts as determinant
-        const determinant = group.find(a => /_id$|_code$/i.test(a.name));
-        if (!determinant) continue;
+        const determinant = group.find((a: Attribute) => /_id$|_code$/i.test(a.name));
+        if (!determinant) return;
 
-        const dependents = group.filter(a => a.name !== determinant.name);
-        if (dependents.length === 0) continue;
+        const dependents = group.filter((a: Attribute) => a.name !== determinant.name);
+        if (dependents.length === 0) return;
 
         const newEntityName = prefix;
 
-        if (schema.entities.find(e => e.name === newEntityName) || newEntities.find(e => e.name === newEntityName)) continue;
+        if (schema.entities.find(e => e.name === newEntityName) || newEntities.find(e => e.name === newEntityName)) return;
 
         const newEntity: Entity = {
           name: newEntityName,
           description: `3NF (strict) decomposition: prefix cluster '${prefix}_*'`,
           attributes: [
             { name: determinant.name, dataType: determinant.dataType, isPrimaryKey: true, isNullable: false, isUnique: true },
-            ...dependents.map(a => ({ ...a, isPrimaryKey: false }))
+            ...dependents.map((a: Attribute) => ({ ...a, isPrimaryKey: false }))
           ]
         };
 
@@ -304,12 +304,12 @@ function apply3NF(schema: Schema, logs: string[], strictMode?: boolean): { schem
           onUpdate: 'CASCADE'
         });
 
-        const removed = new Set(dependents.map(a => a.name));
+        const removed = new Set(dependents.map((a: Attribute) => a.name));
         entity.attributes = entity.attributes.filter(a => !removed.has(a.name));
 
-        logs.push(`[3NF][strict] Extracted prefix cluster '${prefix}_*': moved [${dependents.map(a => a.name).join(', ')}] into '${newEntityName}'`);
+        logs.push(`[3NF][strict] Extracted prefix cluster '${prefix}_*': moved [${dependents.map((a: Attribute) => a.name).join(', ')}] into '${newEntityName}'`);
         changed = true;
-      }
+      });
     }
   }
 
@@ -333,9 +333,9 @@ function detectPrefixClusters(attrs: Attribute[]): Map<string, Attribute[]> {
   }
 
   // Only return groups with 2+ members (a lone prefixed attr isn't a cluster)
-  for (const [key, val] of groups) {
+  groups.forEach((val, key) => {
     if (val.length < 2) groups.delete(key);
-  }
+  });
 
   return groups;
 }

@@ -4,39 +4,29 @@ import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 import { 
   Play, Share2, FileCode2, FileType, Image as ImageIcon, Cloud, Check, Loader2, 
-  ChevronDown, Sparkles, ArrowRight, Menu
+  ChevronDown, Menu
 } from "lucide-react";
 import { ReactFlowInstance } from "@xyflow/react";
+import { showToast } from "../ui/toast";
 
 interface FloatingHeaderProps {
   generatedSql?: string;
   generatedMermaid?: string;
   rfInstance?: ReactFlowInstance | null;
-  onSubmitPrompt?: (prompt: string) => void;
-  isGenerating?: boolean;
+  showSidebar?: boolean;
 }
 
 export function FloatingHeader({ 
   generatedSql, 
   generatedMermaid, 
   rfInstance, 
-  onSubmitPrompt, 
-  isGenerating 
+  showSidebar = false,
 }: FloatingHeaderProps) {
   const router = useRouter();
-  const [prompt, setPrompt] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "success" | "error">("idle");
   const [validationState, setValidationState] = useState<"idle" | "validating" | "success" | "error">("idle");
   const [shareState, setShareState] = useState<"idle" | "success">("idle");
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (prompt.trim() && onSubmitPrompt) {
-      onSubmitPrompt(prompt.trim());
-      setPrompt("");
-    }
-  };
 
   const downloadAsFile = useCallback(async (content: string, filename: string, mimeType: string) => {
     if (!content) return;
@@ -76,16 +66,17 @@ export function FloatingHeader({
       });
       if (res.ok) {
         setSaveState("success");
+        showToast("Saved to cloud", "cloud");
         setTimeout(() => setSaveState("idle"), 3000);
       } else {
         const errorData = await res.json();
-        alert(`Server Error: ${errorData.error}`);
+        showToast(`Failed to save: ${errorData.error}`, "error");
         setSaveState("error");
         setTimeout(() => setSaveState("idle"), 3000);
       }
     } catch (error: any) {
       console.error(error);
-      alert(`Network Error: ${error.message}`);
+      showToast(`Failed to save: ${error.message}`, "error");
       setSaveState("error");
       setTimeout(() => setSaveState("idle"), 3000);
     }
@@ -93,10 +84,12 @@ export function FloatingHeader({
 
   const handleDownloadSql = () => {
     downloadAsFile(generatedSql || "", "designdb_schema.sql", "application/sql");
+    showToast("SQL script downloaded", "download");
   };
 
   const handleDownloadMermaid = () => {
     downloadAsFile(generatedMermaid || "", "designdb_erd.mmd", "text/plain");
+    showToast("Mermaid file downloaded", "download");
   };
 
   const handleDownloadPng = useCallback(() => {
@@ -115,10 +108,31 @@ export function FloatingHeader({
     const clone = flowWrapper.cloneNode(true) as HTMLElement;
     clone.querySelectorAll(".react-flow__controls, .react-flow__panel, .react-flow__minimap").forEach(el => el.remove());
 
+    let cssStyles = "";
+    try {
+      const sheets = Array.from(document.styleSheets);
+      for (const sheet of sheets) {
+        if (!sheet.href || sheet.href.startsWith(window.location.origin)) {
+          const rules = Array.from(sheet.cssRules);
+          for (const rule of rules) {
+            cssStyles += rule.cssText;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Could not copy document styles for SVG export:", e);
+    }
+
     const svgData = `
       <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+        <style>
+          ${cssStyles}
+          body, div, span, h3 {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+          }
+        </style>
         <foreignObject width="100%" height="100%">
-          <div xmlns="http://www.w3.org/1999/xhtml" style="width:${width}px;height:${height}px;background:#0a0f1e;">
+          <div xmlns="http://www.w3.org/1999/xhtml" style="width:${width}px;height:${height}px;background:#0a0f1e;position:relative;">
             ${clone.outerHTML}
           </div>
         </foreignObject>
@@ -135,7 +149,10 @@ export function FloatingHeader({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ dataUrl }),
       });
-      if (!res.ok) return;
+      if (!res.ok) {
+        showToast("Failed to download PNG", "error");
+        return;
+      }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -144,6 +161,7 @@ export function FloatingHeader({
       a.download = "designdb_erd.png";
       document.body.appendChild(a);
       a.click();
+      showToast("PNG image downloaded", "download");
       setTimeout(() => {
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
@@ -156,60 +174,60 @@ export function FloatingHeader({
   const hasMermaid = !!generatedMermaid;
 
   return (
-    <div className="absolute top-6 left-0 right-0 z-50 px-6 flex justify-center pointer-events-none">
-      <div className="pointer-events-auto w-full max-w-6xl h-14 rounded-full bg-[#030712]/75 backdrop-blur-xl border border-white/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.5)] flex items-center justify-between px-6 transition-all duration-300">
-        
-        {/* Left: DesignDB Logo */}
-        <div 
-          className="flex items-center gap-2 cursor-pointer shrink-0" 
+    <>
+      {/* Standalone Logo — top-left, icon only */}
+      <div className="absolute top-6 left-6 z-50 pointer-events-auto">
+        <button
           onClick={() => router.push("/")}
+          className="w-11 h-11 rounded-xl bg-gradient-to-br from-lime-green to-[#0f2d12] shadow-[0_0_16px_rgba(194,239,78,0.25),0_8px_24px_rgba(0,0,0,0.4)] flex items-center justify-center border border-lime-green/20 hover:scale-110 hover:shadow-[0_0_24px_rgba(194,239,78,0.4)] transition-all duration-300 cursor-pointer"
+          aria-label="Go to home"
         >
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-lime-green to-[#0f2d12] shadow-[0_0_12px_rgba(194,239,78,0.25)] flex items-center justify-center border border-lime-green/20">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <rect x="1.5" y="1.5" width="4.5" height="4.5" rx="1" fill="#C2EF4E" />
-              <rect x="8" y="1.5" width="4.5" height="4.5" rx="1" fill="rgba(194,239,78,0.4)" />
-              <rect x="1.5" y="8" width="4.5" height="4.5" rx="1" fill="rgba(194,239,78,0.4)" />
-              <rect x="8" y="8" width="4.5" height="4.5" rx="1" fill="#C2EF4E" />
-            </svg>
+          <svg width="16" height="16" viewBox="0 0 14 14" fill="none">
+            <rect x="1.5" y="1.5" width="4.5" height="4.5" rx="1" fill="#C2EF4E" />
+            <rect x="8" y="1.5" width="4.5" height="4.5" rx="1" fill="rgba(194,239,78,0.4)" />
+            <rect x="1.5" y="8" width="4.5" height="4.5" rx="1" fill="rgba(194,239,78,0.4)" />
+            <rect x="8" y="8" width="4.5" height="4.5" rx="1" fill="#C2EF4E" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Standalone Actions Button — top-right fixed */}
+      <div 
+        className="absolute top-6 right-6 z-50 pointer-events-auto transition-all duration-300 ease-in-out"
+      >
+        <div className="relative">
+          {/* Split Drop Menu Button Container */}
+          <div className="flex items-center rounded-full overflow-hidden shadow-[0_4px_16px_rgba(0,0,0,0.2)] focus-within:ring-2 focus-within:ring-white/20 transition-all">
+            {/* Leading Button (Left Side) */}
+            <button
+              id="actions-main-button"
+              onClick={() => setMenuOpen(!menuOpen)}
+              className={`flex items-center gap-2 pl-4 pr-3 py-2 text-xs font-medium text-white transition-all outline-none
+                ${menuOpen ? 'bg-[#5a51a6]' : 'bg-[#6a5fc1] hover:bg-[#5a51a6] active:bg-[#4f469c]'}
+              `}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
+              </svg>
+              Actions
+            </button>
+            
+            {/* Separator */}
+            <div className={`w-[1px] self-stretch transition-colors ${menuOpen ? 'bg-[#4f469c]' : 'bg-[#5a51a6]'}`} />
+            
+            {/* Trailing Button (Right Side - Chevron) */}
+            <button
+              id="actions-menu-button"
+              onClick={() => setMenuOpen(!menuOpen)}
+              className={`flex items-center justify-center pl-2 pr-3 py-2 text-white transition-all outline-none
+                ${menuOpen ? 'bg-[#5a51a6]' : 'bg-[#6a5fc1] hover:bg-[#5a51a6] active:bg-[#4f469c]'}
+              `}
+              aria-haspopup="true"
+              aria-expanded={menuOpen}
+            >
+              <ChevronDown size={14} className={`transition-transform duration-200 ${menuOpen ? 'rotate-180' : ''}`} />
+            </button>
           </div>
-          <span className="text-sm font-bold tracking-wide select-none text-white" style={{ fontFamily: "Vagnola, sans-serif" }}>
-            Design<span className="text-lime-green">DB</span>
-          </span>
-        </div>
-
-        {/* Middle: Combined AI Prompting Input */}
-        <form 
-          onSubmit={handleSubmit} 
-          className="flex-1 max-w-xl mx-8 flex items-center bg-white/[0.03] border border-white/[0.06] rounded-full px-4.5 py-1.5 focus-within:border-lime-green/30 focus-within:bg-white/[0.05] transition-all"
-        >
-          <Sparkles size={13} className="text-lime-green/75 shrink-0 mr-2.5 animate-pulse" />
-          <input 
-            value={prompt} 
-            onChange={e => setPrompt(e.target.value)} 
-            disabled={isGenerating}
-            placeholder="Modify schema in plain English (e.g. Add an orders table)..." 
-            className="w-full bg-transparent text-[12px] text-white placeholder-white/20 outline-none font-sans" 
-          />
-          <button 
-            type="submit" 
-            disabled={isGenerating || !prompt.trim()} 
-            className="p-1 rounded-full bg-lime-green text-[#050B14] hover:bg-lime-green/90 disabled:opacity-30 disabled:cursor-not-allowed transition-all shrink-0 ml-2 shadow-[0_2px_8px_rgba(194,239,78,0.2)]"
-          >
-            {isGenerating ? <Loader2 size={11} className="animate-spin text-[#050B14]" /> : <ArrowRight size={11} />}
-          </button>
-        </form>
-
-        {/* Right: Consolidated Action Menu/Dropdown */}
-        <div className="relative shrink-0 flex items-center gap-2">
-          
-          <button
-            onClick={() => setMenuOpen(!menuOpen)}
-            className="flex items-center gap-2 px-4.5 py-2 text-xs font-bold rounded-full transition-all text-white bg-white/5 hover:bg-white/10 border border-white/[0.08]"
-          >
-            <Menu size={12} />
-            Actions
-            <ChevronDown size={12} className={`transition-transform duration-200 ${menuOpen ? 'rotate-180' : ''}`} />
-          </button>
 
           {menuOpen && (
             <>
@@ -236,12 +254,14 @@ export function FloatingHeader({
                     if (validationState !== "idle") return;
                     if (!generatedSql) {
                       setValidationState("error");
+                      showToast("No schema to validate", "error");
                       setTimeout(() => setValidationState("idle"), 2000);
                       return;
                     }
                     setValidationState("validating");
                     setTimeout(() => {
                       setValidationState("success");
+                      showToast("Schema validated ✓", "validate");
                       setTimeout(() => setValidationState("idle"), 3000);
                     }, 1500);
                   }}
@@ -261,6 +281,7 @@ export function FloatingHeader({
                     const shareLink = `https://designdb.app/share/${dummyId}`;
                     navigator.clipboard.writeText(shareLink);
                     setShareState("success");
+                    showToast("Share link copied to clipboard", "share");
                     setTimeout(() => setShareState("idle"), 2000);
                   }}
                   className="flex items-center gap-2.5 px-3.5 py-2 text-xs rounded-xl transition-all text-white/70 hover:text-white hover:bg-white/[0.05] font-medium"
@@ -305,10 +326,8 @@ export function FloatingHeader({
               </div>
             </>
           )}
-
         </div>
-
       </div>
-    </div>
+    </>
   );
 }

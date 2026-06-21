@@ -3,9 +3,8 @@ generator client {
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
+  provider = "sqlite"
+  url      = "file:./dev.db"
 }
 
 model User {
@@ -20,8 +19,8 @@ model Project {
   user        User     @relation(fields: [userId], references: [id])
   title       String
   rawPrompt   String?
-  nodesJson   Json
-  edgesJson   Json
+  nodesJson   String
+  edgesJson   String
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }

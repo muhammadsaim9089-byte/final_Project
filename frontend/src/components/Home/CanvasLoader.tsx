@@ -24,7 +24,7 @@ const Overlay = styled.div<{ $exiting: boolean }>`
   position: fixed;
   inset: 0;
   z-index: 9999;
-  background: #ffffff;
+  background: #0a1628;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -41,16 +41,16 @@ const StyledWrapper = styled.div`
     stroke-linejoin: round;
   }
 
-  /* ghost trail — same blue at low opacity */
+  /* ghost trail — white at low opacity */
   .loading svg polyline#back {
     fill: none;
-    stroke: #1e549f33;
+    stroke: rgba(255, 255, 255, 0.15);
   }
 
-  /* live stroke — project blue */
+  /* live stroke — white */
   .loading svg polyline#front {
     fill: none;
-    stroke: #1e549f;
+    stroke: #ffffff;
     stroke-dasharray: 48, 144;
     stroke-dashoffset: 192;
     animation: ${dash_682} 1.4s linear infinite;
@@ -61,7 +61,7 @@ const Wordmark = styled.p`
   font-family: "Vagnola", sans-serif;
   font-size: 0.85rem;
   letter-spacing: 0.06em;
-  color: #0a1628;
+  color: #ffffff;
   margin: 0;
   opacity: 0.8;
 `;
@@ -72,14 +72,12 @@ interface CanvasLoaderProps {
   totalMs?: number;
 }
 
-export function CanvasLoader({ onComplete, totalMs = 3400 }: CanvasLoaderProps) {
+export function CanvasLoader({ onComplete, totalMs = 8000 }: CanvasLoaderProps) {
   const [exiting, setExiting] = useState(false);
 
   useEffect(() => {
-    const exitTimer = setTimeout(() => setExiting(true), totalMs - 350);
     const doneTimer = setTimeout(() => onComplete(), totalMs);
     return () => {
-      clearTimeout(exitTimer);
       clearTimeout(doneTimer);
     };
   }, [onComplete, totalMs]);
@@ -102,7 +100,7 @@ export function CanvasLoader({ onComplete, totalMs = 3400 }: CanvasLoaderProps) 
       </StyledWrapper>
 
       <Wordmark>
-        Design<span style={{ color: "#1e549f" }}>DB</span>
+        Design<span style={{ color: "#ffffff" }}>DB</span>
       </Wordmark>
     </Overlay>
   );

@@ -30,7 +30,7 @@ export function DataTypesPanel({ onClose }: DataTypesPanelProps) {
   );
 
   return (
-    <div className="absolute left-6 top-1/2 -translate-y-1/2 z-50 w-[460px] max-h-[75vh] overflow-hidden rounded-2xl border border-white/[0.08] bg-[#060B15]/95 backdrop-blur-xl shadow-[0_24px_64px_rgba(0,0,0,0.75)] flex flex-col animate-in fade-in slide-in-from-left-6 duration-300 pointer-events-auto">
+    <div className="absolute left-[80px] top-[80px] z-50 w-[420px] max-h-[420px] overflow-hidden rounded-2xl border border-white/[0.08] bg-[#060B15]/95 backdrop-blur-xl shadow-[0_24px_64px_rgba(0,0,0,0.75)] flex flex-col pointer-events-auto">
       
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06] shrink-0">

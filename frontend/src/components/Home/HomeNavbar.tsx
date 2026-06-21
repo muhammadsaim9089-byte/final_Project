@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { ExternalLink, BookOpen } from "lucide-react";
 import { CanvasLoader } from "./CanvasLoader";
@@ -9,13 +9,18 @@ export function HomeNavbar() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
 
+  // Prefetch the canvas page so it loads instantly after the loader animation
+  useEffect(() => {
+    router.prefetch("/canvas");
+  }, [router]);
+
   const handleOpenCanvas = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     setLoading(true);
   }, []);
 
   const handleLoaderComplete = useCallback(() => {
-    router.push("/canvas");
+    router.replace("/canvas");
   }, [router]);
 
   return (

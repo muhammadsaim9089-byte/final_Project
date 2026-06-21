@@ -30,8 +30,8 @@ export async function POST(req: Request) {
         userId: actualUserId,
         title,
         rawPrompt: rawPrompt || "",
-        nodesJson: nodes,
-        edgesJson: edges,
+        nodesJson: JSON.stringify(nodes),
+        edgesJson: JSON.stringify(edges),
       },
     });
 

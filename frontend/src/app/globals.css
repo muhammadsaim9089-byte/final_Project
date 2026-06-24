@@ -189,3 +189,43 @@
   pointer-events: none;
   background: radial-gradient(ellipse at center, transparent 40%, rgba(5, 11, 20, 0.5) 100%);
 }
+
+/* ═══ SQL IDE WORKSPACE STYLES ═══ */
+
+/* Horizontal resize handle */
+.resize-handle-h {
+  transition: background-color 0.2s;
+}
+.resize-handle-h:hover {
+  background: rgba(74, 144, 217, 0.04);
+}
+.resize-handle-h:active {
+  background: rgba(74, 144, 217, 0.08);
+}
+
+/* SQL IDE line number gutter */
+.sql-ide-gutter {
+  counter-reset: line;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+/* Drag and drop zone animation */
+@keyframes dropZonePulse {
+  0%, 100% { border-color: rgba(74, 144, 217, 0.3); }
+  50% { border-color: rgba(74, 144, 217, 0.6); }
+}
+.drop-zone-active {
+  animation: dropZonePulse 1.5s ease-in-out infinite;
+}
+
+/* SQL autocomplete popup */
+.sql-autocomplete {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* Cursor blink rate override for code editors */
+.caret-\[\#4A90D9\] {
+  caret-color: #4A90D9;
+}

@@ -3,7 +3,7 @@
 import React, { useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { AnimatePresence, motion } from "motion/react";
-import { FolderOpen, PlusSquare, Component, LayoutTemplate, Database, Sparkles } from "lucide-react";
+import { FolderOpen, PlusSquare, Component, LayoutTemplate, Database, Sparkles, Cable } from "lucide-react";
 import { useLayout } from "./LayoutContext";
 
 export function NavigationSidebar() {
@@ -20,6 +20,7 @@ export function NavigationSidebar() {
     { id: 'add', label: 'Add Element', icon: <PlusSquare size={18} />, onClick: () => layout.triggerToggleUnifiedSidebar('add') },
     { id: 'inspector', label: 'Inspector', icon: <Component size={18} />, onClick: () => layout.triggerToggleUnifiedSidebar('inspector') },
     { id: 'layout', label: 'Layout', icon: <LayoutTemplate size={18} />, onClick: () => layout.triggerToggleLayout() },
+    { id: 'relations', label: 'Relationships', icon: <Cable size={18} />, onClick: () => layout.triggerToggleRelations() },
     { id: 'sql', label: 'SQL Sandbox', icon: <Database size={18} />, onClick: () => layout.triggerToggleSqlSandbox() },
     { id: 'ai', label: 'AI Insights', icon: <Sparkles size={18} />, onClick: () => layout.triggerToggleAiInsights() },
   ];

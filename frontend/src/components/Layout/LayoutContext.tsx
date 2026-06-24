@@ -20,12 +20,14 @@ type LayoutContextType = {
   registerToggleDashboard: (fn: () => void) => void;
   registerToggleSqlSandbox: (fn: () => void) => void;
   registerToggleLayout: (fn: () => void) => void;
+  registerToggleRelations: (fn: () => void) => void;
   registerToggleAiInsights: (fn: () => void) => void;
   // Triggerers used by nav
   triggerToggleUnifiedSidebar: (tab?: "add" | "inspector") => void;
   triggerToggleDashboard: () => void;
   triggerToggleSqlSandbox: () => void;
   triggerToggleLayout: () => void;
+  triggerToggleRelations: () => void;
   triggerToggleAiInsights: () => void;
   // Generated SQL cache (last compiled)
   generatedSql: string;
@@ -46,6 +48,7 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
   const toggleDashboardRef = useRef<(() => void) | null>(null);
   const toggleSqlSandboxRef = useRef<(() => void) | null>(null);
   const toggleLayoutRef = useRef<(() => void) | null>(null);
+  const toggleRelationsRef = useRef<(() => void) | null>(null);
   const toggleAiRef = useRef<(() => void) | null>(null);
 
   const [generatedSql, setGeneratedSql] = useState<string>("");
@@ -102,6 +105,7 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
   const registerToggleDashboard = (fn: () => void) => { toggleDashboardRef.current = fn; };
   const registerToggleSqlSandbox = (fn: () => void) => { toggleSqlSandboxRef.current = fn; };
   const registerToggleLayout = (fn: () => void) => { toggleLayoutRef.current = fn; };
+  const registerToggleRelations = (fn: () => void) => { toggleRelationsRef.current = fn; };
   const registerToggleAiInsights = (fn: () => void) => { toggleAiRef.current = fn; };
 
   const triggerToggleUnifiedSidebar = (tab?: "add" | "inspector") => {
@@ -110,6 +114,7 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
   const triggerToggleDashboard = () => { if (toggleDashboardRef.current) toggleDashboardRef.current(); };
   const triggerToggleSqlSandbox = () => { if (toggleSqlSandboxRef.current) toggleSqlSandboxRef.current(); };
   const triggerToggleLayout = () => { if (toggleLayoutRef.current) toggleLayoutRef.current(); };
+  const triggerToggleRelations = () => { if (toggleRelationsRef.current) toggleRelationsRef.current(); };
   const triggerToggleAiInsights = () => { if (toggleAiRef.current) toggleAiRef.current(); };
 
   return (
@@ -127,11 +132,13 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
         registerToggleDashboard,
         registerToggleSqlSandbox,
         registerToggleLayout,
+        registerToggleRelations,
         registerToggleAiInsights,
         triggerToggleUnifiedSidebar,
         triggerToggleDashboard,
         triggerToggleSqlSandbox,
         triggerToggleLayout,
+        triggerToggleRelations,
         triggerToggleAiInsights,
         generatedSql,
         setGeneratedSql,

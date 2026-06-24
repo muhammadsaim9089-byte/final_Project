@@ -33,7 +33,7 @@ import { useUndoRedo } from "@/hooks/useUndoRedo";
 import { UnifiedSidebar } from "./UnifiedSidebar";
 import { SqlSandbox } from "./SqlSandbox";
 import { Dashboard } from "./Dashboard";
-import { Database, LayoutTemplate, Cable, Component, Loader2, PlusSquare, Sparkles, ArrowRight, FolderOpen } from "lucide-react";
+import { Loader2, ArrowRight, Sparkles } from 'lucide-react';
 
 const nodeTypes = {
   tableMode: TableNode,
@@ -140,11 +140,30 @@ export function Canvas() {
   }, []);
 
   const layout = useLayout();
+
+  useEffect(() => {
+    if (layout.isSqlOpen) {
+      setShowSqlSandbox(false);
+      setShowUnifiedSidebar(false);
+      setShowDashboard(false);
+      setIsReviewsOpen(false);
+    }
+  }, [layout.isSqlOpen]);
+
   // Keep stable refs for sidebar state to avoid stale closures in toggle handlers
   const showUnifiedSidebarRef = useRef<boolean>(showUnifiedSidebar);
   useEffect(() => { showUnifiedSidebarRef.current = showUnifiedSidebar; }, [showUnifiedSidebar]);
   const sidebarTabRef = useRef<"add" | "inspector" | "sql">(sidebarTab);
   useEffect(() => { sidebarTabRef.current = sidebarTab; }, [sidebarTab]);
+  // Refs for layout direction and edge style to prevent stale closures in registered handlers
+  const layoutDirectionRef = useRef<'LR' | 'TB'>(layoutDirection);
+  useEffect(() => { layoutDirectionRef.current = layoutDirection; }, [layoutDirection]);
+  const edgeStyleRef = useRef<'crowsFoot' | 'pulseMode'>(edgeStyle);
+  useEffect(() => { edgeStyleRef.current = edgeStyle; }, [edgeStyle]);
+  const nodesRef = useRef<Node[]>(nodes);
+  useEffect(() => { nodesRef.current = nodes; }, [nodes]);
+  const edgesRef = useRef<Edge[]>(edges);
+  useEffect(() => { edgesRef.current = edges; }, [edges]);
 
   useEffect(() => {
     if (layout && layout.registerRfInstance) {
@@ -160,6 +179,7 @@ export function Canvas() {
           setShowSqlSandbox(false);
           setIsReviewsOpen(false);
           setShowDashboard(false);
+          layout.setSqlOpen(false);
           setShowUnifiedSidebar(true);
           if (tab) setSidebarTab(tab);
         }
@@ -175,6 +195,7 @@ export function Canvas() {
             setShowUnifiedSidebar(false);
             setShowSqlSandbox(false);
             setIsReviewsOpen(false);
+            layout.setSqlOpen(false);
           }
           return next;
         });
@@ -189,6 +210,7 @@ export function Canvas() {
             setShowUnifiedSidebar(false);
             setShowDashboard(false);
             setIsReviewsOpen(false);
+            layout.setSqlOpen(false);
           }
           return next;
         });
@@ -196,7 +218,33 @@ export function Canvas() {
     }
     
     if (layout && layout.registerToggleLayout) {
-      layout.registerToggleLayout(() => handleLayoutToggle());
+      layout.registerToggleLayout(() => {
+        // Use refs to avoid stale closure
+        const curDir = layoutDirectionRef.current;
+        const newDir = curDir === 'LR' ? 'TB' : 'LR';
+        setLayoutDirection(newDir);
+        const curNodes = nodesRef.current;
+        const curEdges = edgesRef.current;
+        if (curNodes.length > 0) {
+          const layouted = getLayoutedElements(curNodes, curEdges, newDir);
+          setNodes(layouted.nodes);
+          setEdges(layouted.edges);
+          if (rfInstance) {
+            setTimeout(() => rfInstance.fitView({ duration: 800, padding: 0.1 }), 200);
+          }
+          takeSnapshot();
+        }
+      });
+    }
+    if (layout && layout.registerToggleRelations) {
+      layout.registerToggleRelations(() => {
+        // Use refs to avoid stale closure
+        const curStyle = edgeStyleRef.current;
+        const newStyle = curStyle === 'crowsFoot' ? 'pulseMode' : 'crowsFoot';
+        setEdgeStyle(newStyle);
+        setEdges(eds => eds.map(e => ({ ...e, type: newStyle })));
+        takeSnapshot();
+      });
     }
     if (layout && layout.registerToggleAiInsights) {
       layout.registerToggleAiInsights(() => {
@@ -206,6 +254,7 @@ export function Canvas() {
             setShowUnifiedSidebar(false);
             setShowSqlSandbox(false);
             setShowDashboard(false);
+            layout.setSqlOpen(false);
           }
           return next;
         });
@@ -361,102 +410,6 @@ export function Canvas() {
     setEdges((eds) => addEdge(params, eds));
   }, [setEdges, takeSnapshot]);
 
-  // --- DOCK HANDLERS ---
-  const handleLayoutToggle = useCallback(() => {
-    const newDir = layoutDirection === 'LR' ? 'TB' : 'LR';
-    setLayoutDirection(newDir);
-    if (nodes.length > 0) {
-      const layouted = getLayoutedElements(nodes, edges, newDir);
-      setNodes(layouted.nodes);
-      setEdges(layouted.edges);
-      if (rfInstance) {
-        setTimeout(() => rfInstance.fitView({ duration: 800, padding: 0.1 }), 200);
-      }
-      takeSnapshot();
-    }
-  }, [layoutDirection, nodes, edges, rfInstance, setNodes, setEdges, takeSnapshot]);
-
-  const handleEdgeToggle = useCallback(() => {
-    const newStyle = edgeStyle === 'crowsFoot' ? 'pulseMode' : 'crowsFoot';
-    setEdgeStyle(newStyle);
-    setEdges(eds => eds.map(e => ({ ...e, type: newStyle })));
-    takeSnapshot();
-  }, [edgeStyle, setEdges, takeSnapshot]);
-
-  const dockItems = [
-    { 
-      title: "Projects",  
-      href: "#", 
-      icon: <FolderOpen size={20} />,    
-      onClick: () => { 
-        setShowDashboard(p => !p);
-      }, 
-      isActive: showDashboard 
-    },
-    { 
-      title: "Add Elements",  
-      href: "#", 
-      icon: <PlusSquare size={20} />,    
-      onClick: () => { 
-        if (showUnifiedSidebar && sidebarTab === "add") {
-          setShowUnifiedSidebar(false);
-        } else {
-          setShowUnifiedSidebar(true);
-          setSidebarTab("add");
-        }
-      }, 
-      isActive: showUnifiedSidebar && sidebarTab === "add" 
-    },
-    { 
-      title: "Inspector",     
-      href: "#", 
-      icon: <Component size={20} />,      
-      onClick: () => { 
-        if (showUnifiedSidebar && sidebarTab === "inspector") {
-          setShowUnifiedSidebar(false);
-        } else {
-          setShowUnifiedSidebar(true);
-          setSidebarTab("inspector");
-        }
-      }, 
-      isActive: showUnifiedSidebar && sidebarTab === "inspector" 
-    },
-    { 
-      title: "Layouts",       
-      href: "#", 
-      icon: <LayoutTemplate size={20} />,  
-      onClick: handleLayoutToggle,                
-      isActive: layoutDirection === 'TB' 
-    },
-    { 
-      title: "SQL Sandbox",   
-      href: "#", 
-      icon: <Database size={20} />,        
-      onClick: () => { 
-        setShowSqlSandbox(p => !p); 
-        setIsReviewsOpen(false); 
-      },    
-      isActive: showSqlSandbox 
-    },
-    { 
-      title: "Relationships", 
-      href: "#", 
-      icon: <Cable size={20} />,           
-      onClick: handleEdgeToggle,                  
-      isActive: edgeStyle === 'pulseMode' 
-    },
-    { 
-      title: "AI Insights",   
-      href: "#", 
-      icon: <Sparkles size={20} />,        
-      onClick: () => { 
-        setIsReviewsOpen(p => !p); 
-        setShowSqlSandbox(false);
-      },    
-      isActive: isReviewsOpen 
-    },
-  ];
-
   useEffect(() => {
     if (hasFetched.current) return;
     
@@ -503,6 +456,7 @@ export function Canvas() {
       
       const data = await response.json();
       setGeneratedSql(data.sql); // Silently kept for quick export
+      layout.setGeneratedSql(data.sql); // Push to SQL Code Workspace panel
       setGeneratedMermaid(data.mermaid || ""); // Keep mermaid for export
       setRawSchemaContext(data.schema); // Save real context for next iteration
       setAiInsightReport(data.report || ""); // Save AI Insights report

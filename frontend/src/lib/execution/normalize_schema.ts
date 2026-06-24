@@ -133,9 +133,7 @@ function apply2NF(schema: Schema, logs: string[]): { schema: Schema, changed: bo
 
     // 2NF only applies to composite primary keys
     if (pkAttrs.length < 2) continue;
-
-    const pkNames = pkAttrs.map(a => a.name);
-
+    
     // Group non-key attributes by which PK column they "belong to"
     // Heuristic: attr name starts with or contains the PK column stem
     const partialGroups: Map<string, Attribute[]> = new Map();

@@ -43,7 +43,7 @@ export default function HomePage() {
               DB
             </span>
           </h1>
-          <p className="text-base md:text-lg text-white/40 leading-relaxed max-w-xl mx-auto" style={{ fontFamily: "Vagnola, sans-serif" }}>
+          <p className="text-base md:text-lg text-white/65 leading-relaxed max-w-xl mx-auto" style={{ fontFamily: "Vagnola, sans-serif" }}>
             Describe your system in plain English.<br />
             Get a normalized schema, ER diagram, and SQL — instantly.
           </p>

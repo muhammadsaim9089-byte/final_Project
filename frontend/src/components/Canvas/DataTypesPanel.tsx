@@ -45,7 +45,7 @@ export function DataTypesPanel({ onClose }: DataTypesPanelProps) {
         </div>
         <button
           onClick={onClose}
-          className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/[0.06] transition-all"
+          className="p-1.5 rounded-lg text-white/65 hover:text-white hover:bg-white/[0.06] transition-all"
         >
           <X size={15} />
         </button>
@@ -65,7 +65,7 @@ export function DataTypesPanel({ onClose }: DataTypesPanelProps) {
           {search && (
             <button
               onClick={() => setSearch("")}
-              className="absolute right-3 text-[10px] text-white/40 hover:text-white"
+              className="absolute right-3 text-[10px] text-white/65 hover:text-white"
             >
               Clear
             </button>
@@ -94,7 +94,7 @@ export function DataTypesPanel({ onClose }: DataTypesPanelProps) {
               {/* Type Name & Desc */}
               <div className="flex flex-col pr-2 justify-center">
                 <span className="text-lime-green font-mono font-semibold text-[11px] tracking-wide">{dt.type}</span>
-                <span className="text-white/40 text-[10px] mt-0.5 leading-snug">{dt.desc}</span>
+                <span className="text-white/65 text-[10px] mt-0.5 leading-snug">{dt.desc}</span>
               </div>
               
               {/* PG */}

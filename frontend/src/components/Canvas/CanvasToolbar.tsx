@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Undo2, Redo2, Search } from "lucide-react";
+import { Undo2, Redo2 } from "lucide-react";
 import { ReactFlowInstance } from "@xyflow/react";
 
 interface CanvasToolbarProps {

@@ -52,7 +52,7 @@ export function HomeNavbar() {
               <a
                 key={item}
                 href="#"
-                className="text-xs text-white/50 hover:text-white transition-colors duration-200 tracking-wide font-medium"
+                className="text-xs text-white/65 hover:text-white transition-colors duration-200 tracking-wide font-medium"
               >
                 {item}
               </a>
@@ -65,11 +65,11 @@ export function HomeNavbar() {
               href="https://github.com"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-white/40 hover:text-white transition-colors duration-200"
+              className="text-white/65 hover:text-white transition-colors duration-200"
             >
               <ExternalLink size={16} />
             </a>
-            <a href="#" className="text-white/40 hover:text-white transition-colors duration-200">
+            <a href="#" className="text-white/65 hover:text-white transition-colors duration-200">
               <BookOpen size={16} />
             </a>
             <button

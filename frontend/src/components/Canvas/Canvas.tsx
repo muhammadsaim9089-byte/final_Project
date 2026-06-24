@@ -19,20 +19,21 @@ import '@xyflow/react/dist/style.css';
 import dagre from 'dagre';
 
 import { FloatingHeader } from "./FloatingHeader";
+import { useLayout } from "@/components/Layout/LayoutContext";
 import { ToastContainer } from "../ui/toast";
-import { RightSidebar } from "./RightSidebar";
-import { LeftSidebar } from "./LeftSidebar";
 import { TableNode } from "./Nodes/TableNode";
 import { PulseEdge } from "./Edges/PulseEdge";
 import { CrowsFootEdge } from "./Edges/CrowsFootEdge";
 import { HoverProvider } from "./HoverContext";
-import { FloatingDock } from "../ui/floating-dock";
-import { BottomPanel } from "./BottomPanel";
+  
 import { DataTypesPanel } from "./DataTypesPanel";
 import { CursorDotGrid } from "./CursorDotGrid";
 import { CanvasToolbar } from "./CanvasToolbar";
 import { useUndoRedo } from "@/hooks/useUndoRedo";
-import { Database, LayoutTemplate, Cable, Component, Loader2, PlusSquare, Sparkles, ArrowRight } from "lucide-react";
+import { UnifiedSidebar } from "./UnifiedSidebar";
+import { SqlSandbox } from "./SqlSandbox";
+import { Dashboard } from "./Dashboard";
+import { Database, LayoutTemplate, Cable, Component, Loader2, PlusSquare, Sparkles, ArrowRight, FolderOpen } from "lucide-react";
 
 const nodeTypes = {
   tableMode: TableNode,
@@ -100,16 +101,160 @@ export function Canvas() {
   const hasFetched = useRef(false);
 
   // Dock toggle states
-  const [showSidebar, setShowSidebar] = useState(true);
+  const [showUnifiedSidebar, setShowUnifiedSidebar] = useState(false);
+  const [sidebarTab, setSidebarTab] = useState<"add" | "inspector" | "sql">("add");
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [showSqlSandbox, setShowSqlSandbox] = useState(false);
+  const [showDashboard, setShowDashboard] = useState(false);
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
+  const [projectTitle, setProjectTitle] = useState("Untitled Schema");
+  const [sqlDialect, setSqlDialect] = useState("postgres");
   const [showDataTypes, setShowDataTypes] = useState(false);
   const [layoutDirection, setLayoutDirection] = useState<'LR' | 'TB'>('LR');
   const [edgeStyle, setEdgeStyle] = useState<'crowsFoot' | 'pulseMode'>('crowsFoot');
-  const [isSqlOpen, setIsSqlOpen] = useState(false);
   const [isReviewsOpen, setIsReviewsOpen] = useState(false);
 
   // Sidebar state
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [showGrid, setShowGrid] = useState(true);
+
+  // Onboarding tour state
+  const [tourStep, setTourStep] = useState<number | null>(null);
+
+  // Onboarding tour triggers
+  const skipTour = () => {
+    localStorage.setItem("designdb_tour_completed", "true");
+    setTourStep(null);
+  };
+
+  const completeTour = () => {
+    localStorage.setItem("designdb_tour_completed", "true");
+    setTourStep(null);
+  };
+
+  useEffect(() => {
+    const completed = localStorage.getItem("designdb_tour_completed");
+    if (!completed) {
+      setTimeout(() => setTourStep(1), 1000);
+    }
+  }, []);
+
+  const layout = useLayout();
+  // Keep stable refs for sidebar state to avoid stale closures in toggle handlers
+  const showUnifiedSidebarRef = useRef<boolean>(showUnifiedSidebar);
+  useEffect(() => { showUnifiedSidebarRef.current = showUnifiedSidebar; }, [showUnifiedSidebar]);
+  const sidebarTabRef = useRef<"add" | "inspector" | "sql">(sidebarTab);
+  useEffect(() => { sidebarTabRef.current = sidebarTab; }, [sidebarTab]);
+
+  useEffect(() => {
+    if (layout && layout.registerRfInstance) {
+      layout.registerRfInstance(rfInstance);
+    }
+    if (layout && layout.registerToggleUnifiedSidebar) {
+      layout.registerToggleUnifiedSidebar((tab?: "add" | "inspector") => {
+        // read current values from refs
+        if (showUnifiedSidebarRef.current && tab === sidebarTabRef.current) {
+          setShowUnifiedSidebar(false);
+        } else {
+          // ensure mutually exclusive panels
+          setShowSqlSandbox(false);
+          setIsReviewsOpen(false);
+          setShowDashboard(false);
+          setShowUnifiedSidebar(true);
+          if (tab) setSidebarTab(tab);
+        }
+      });
+    }
+
+    if (layout && layout.registerToggleDashboard) {
+      layout.registerToggleDashboard(() => {
+        setShowDashboard(s => {
+          const next = !s;
+          if (next) {
+            // close others
+            setShowUnifiedSidebar(false);
+            setShowSqlSandbox(false);
+            setIsReviewsOpen(false);
+          }
+          return next;
+        });
+      });
+    }
+
+    if (layout && layout.registerToggleSqlSandbox) {
+      layout.registerToggleSqlSandbox(() => {
+        setShowSqlSandbox(s => {
+          const next = !s;
+          if (next) {
+            setShowUnifiedSidebar(false);
+            setShowDashboard(false);
+            setIsReviewsOpen(false);
+          }
+          return next;
+        });
+      });
+    }
+    
+    if (layout && layout.registerToggleLayout) {
+      layout.registerToggleLayout(() => handleLayoutToggle());
+    }
+    if (layout && layout.registerToggleAiInsights) {
+      layout.registerToggleAiInsights(() => {
+        setIsReviewsOpen(s => {
+          const next = !s;
+          if (next) {
+            setShowUnifiedSidebar(false);
+            setShowSqlSandbox(false);
+            setShowDashboard(false);
+          }
+          return next;
+        });
+      });
+    }
+
+    // Register apply handler for SQL panel
+    if (layout && layout.registerApplySqlHandler) {
+      layout.registerApplySqlHandler((parsed) => {
+        try {
+          // Convert parsed schema to nodes and edges and set state
+          const rawNodes: Node[] = parsed.entities.map((entity: any, idx: number) => ({
+            id: entity.name,
+            type: 'tableMode',
+            position: { x: 100 + idx * 60, y: 150 + idx * 50 },
+            sourcePosition: Position.Right,
+            targetPosition: Position.Left,
+            data: {
+              label: entity.name,
+              icon: 'server',
+              attributes: entity.attributes.map((attr: any) => ({
+                name: attr.name,
+                type: attr.dataType,
+                isPk: attr.isPrimaryKey,
+                isFk: attr.isForeignKey,
+              }))
+            }
+          }));
+
+          const rawEdges: Edge[] = parsed.relationships.map((rel: any, index: number) => ({
+            id: `e-sql-${index}-${Date.now()}`,
+            source: rel.toEntity,
+            target: rel.fromEntity,
+            type: 'crowsFoot',
+            data: { relationshipType: rel.type }
+          }));
+
+          const layouted = getLayoutedElements(rawNodes, rawEdges, layoutDirection);
+          setNodes(layouted.nodes);
+          setEdges(layouted.edges);
+          takeSnapshot();
+          if (rfInstance) setTimeout(() => rfInstance.fitView({ duration: 800, padding: 0.1 }), 200);
+        } catch (err) {
+          console.error('Failed to apply parsed SQL schema', err);
+        }
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layout, rfInstance]);
 
   // Chatbox state
   const [chatPrompt, setChatPrompt] = useState("");
@@ -120,6 +265,20 @@ export function Canvas() {
 
   // Undo/Redo Hook
   const { takeSnapshot, undo, redo, canUndo, canRedo } = useUndoRedo(nodes, setNodes, edges, setEdges);
+
+  // Close open panels with Escape key (projects/dashboard, sidebar, SQL sandbox, AI insights)
+  useEffect(() => {
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      // Close any open overlay/panel
+      if (showDashboard) setShowDashboard(false);
+      if (showUnifiedSidebar) setShowUnifiedSidebar(false);
+      if (showSqlSandbox) setShowSqlSandbox(false);
+      if (isReviewsOpen) setIsReviewsOpen(false);
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [showDashboard, showUnifiedSidebar, showSqlSandbox, isReviewsOpen]);
 
   // Take initial snapshot on mount if nodes exist
   useEffect(() => {
@@ -144,6 +303,7 @@ export function Canvas() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodesToDelete]);
 
   const handleAutoLayout = useCallback(() => {
@@ -223,15 +383,78 @@ export function Canvas() {
     takeSnapshot();
   }, [edgeStyle, setEdges, takeSnapshot]);
 
-  const [showLeftSidebar, setShowLeftSidebar] = useState(false);
-
   const dockItems = [
-    { title: "Add Elements",  href: "#", icon: <PlusSquare size={20} />,    onClick: () => { setShowLeftSidebar(p => !p); setShowSidebar(false); }, isActive: showLeftSidebar },
-    { title: "Inspector",     href: "#", icon: <Component size={20} />,      onClick: () => { setShowSidebar(p => !p); setShowLeftSidebar(false); }, isActive: showSidebar },
-    { title: "Layouts",       href: "#", icon: <LayoutTemplate size={20} />,  onClick: handleLayoutToggle,                isActive: layoutDirection === 'TB' },
-    { title: "Data Types",    href: "#", icon: <Database size={20} />,        onClick: () => { setShowDataTypes(p => !p); setIsReviewsOpen(false); },    isActive: showDataTypes },
-    { title: "Relationships", href: "#", icon: <Cable size={20} />,           onClick: handleEdgeToggle,                  isActive: edgeStyle === 'pulseMode' },
-    { title: "AI Insights",   href: "#", icon: <Sparkles size={20} />,        onClick: () => { setIsReviewsOpen(p => !p); setShowDataTypes(false); },    isActive: isReviewsOpen },
+    { 
+      title: "Projects",  
+      href: "#", 
+      icon: <FolderOpen size={20} />,    
+      onClick: () => { 
+        setShowDashboard(p => !p);
+      }, 
+      isActive: showDashboard 
+    },
+    { 
+      title: "Add Elements",  
+      href: "#", 
+      icon: <PlusSquare size={20} />,    
+      onClick: () => { 
+        if (showUnifiedSidebar && sidebarTab === "add") {
+          setShowUnifiedSidebar(false);
+        } else {
+          setShowUnifiedSidebar(true);
+          setSidebarTab("add");
+        }
+      }, 
+      isActive: showUnifiedSidebar && sidebarTab === "add" 
+    },
+    { 
+      title: "Inspector",     
+      href: "#", 
+      icon: <Component size={20} />,      
+      onClick: () => { 
+        if (showUnifiedSidebar && sidebarTab === "inspector") {
+          setShowUnifiedSidebar(false);
+        } else {
+          setShowUnifiedSidebar(true);
+          setSidebarTab("inspector");
+        }
+      }, 
+      isActive: showUnifiedSidebar && sidebarTab === "inspector" 
+    },
+    { 
+      title: "Layouts",       
+      href: "#", 
+      icon: <LayoutTemplate size={20} />,  
+      onClick: handleLayoutToggle,                
+      isActive: layoutDirection === 'TB' 
+    },
+    { 
+      title: "SQL Sandbox",   
+      href: "#", 
+      icon: <Database size={20} />,        
+      onClick: () => { 
+        setShowSqlSandbox(p => !p); 
+        setIsReviewsOpen(false); 
+      },    
+      isActive: showSqlSandbox 
+    },
+    { 
+      title: "Relationships", 
+      href: "#", 
+      icon: <Cable size={20} />,           
+      onClick: handleEdgeToggle,                  
+      isActive: edgeStyle === 'pulseMode' 
+    },
+    { 
+      title: "AI Insights",   
+      href: "#", 
+      icon: <Sparkles size={20} />,        
+      onClick: () => { 
+        setIsReviewsOpen(p => !p); 
+        setShowSqlSandbox(false);
+      },    
+      isActive: isReviewsOpen 
+    },
   ];
 
   useEffect(() => {
@@ -246,6 +469,7 @@ export function Canvas() {
     }
     
     hasFetched.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const generateSchema = async (prompt: string, existingSchema?: any) => {
@@ -392,10 +616,32 @@ export function Canvas() {
 
   // Dynamic chatbox centering: compute horizontal offset based on open sidebars
   const chatboxOffset = useMemo(() => {
-    const leftOffset = showLeftSidebar ? 150 : 0; // half of 300px sidebar
-    const rightOffset = showSidebar ? 150 : 0;    // half of 300px sidebar
-    return (leftOffset - rightOffset); // positive = shift right, negative = shift left
-  }, [showLeftSidebar, showSidebar]);
+    const rightOffset = showUnifiedSidebar ? 170 : 0; // half of 340px sidebar
+    return -rightOffset;
+  }, [showUnifiedSidebar]);
+
+  const onLoadProject = (project: any) => {
+    setCurrentProjectId(project.id);
+    setProjectTitle(project.title);
+    setNodes(project.nodesJson);
+    setEdges(project.edgesJson);
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+    if (rfInstance) {
+      setTimeout(() => rfInstance.fitView({ duration: 800, padding: 0.1 }), 200);
+    }
+    takeSnapshot();
+  };
+
+  const onCreateNewProject = () => {
+    setCurrentProjectId(null);
+    setProjectTitle("Untitled Schema");
+    setNodes([]);
+    setEdges([]);
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+    takeSnapshot();
+  };
 
   const handleChatSubmit = () => {
     if (!chatPrompt.trim() || showProgressOverlay) return;
@@ -410,7 +656,11 @@ export function Canvas() {
         generatedSql={generatedSql}
         generatedMermaid={generatedMermaid}
         rfInstance={rfInstance}
-        showSidebar={showSidebar}
+        showSidebar={showUnifiedSidebar}
+        projectTitle={projectTitle}
+        setProjectTitle={setProjectTitle}
+        currentProjectId={currentProjectId}
+        setCurrentProjectId={setCurrentProjectId}
       />
 
       {/* SVG Definitions for Crow's Foot Markers */}
@@ -443,29 +693,35 @@ export function Canvas() {
               nodeTypes={nodeTypes}
               edgeTypes={edgeTypes}
               onInit={setRfInstance}
-              onNodeClick={(_event, node) => setSelectedNodeId(node.id)}
+              onNodeClick={(_event, node) => {
+                setSelectedNodeId(node.id);
+                setSelectedEdgeId(null);
+                setSidebarTab("inspector");
+                setShowUnifiedSidebar(true);
+              }}
               onNodeDoubleClick={(_event, node) => {
                 setSelectedNodeId(node.id);
-                setShowLeftSidebar(false);
-                setShowSidebar(true);
+                setSelectedEdgeId(null);
+                setSidebarTab("inspector");
+                setShowUnifiedSidebar(true);
               }}
-              onPaneClick={() => setSelectedNodeId(null)}
+              onEdgeClick={(_event, edge) => {
+                setSelectedEdgeId(edge.id);
+                setSelectedNodeId(null);
+                setSidebarTab("inspector");
+                setShowUnifiedSidebar(true);
+              }}
+              onPaneClick={() => {
+                setSelectedNodeId(null);
+                setSelectedEdgeId(null);
+              }}
               colorMode="dark"
             >
               {showGrid && <Background gap={24} size={1.2} variant={BackgroundVariant.Dots} color="rgba(255, 255, 255, 0.08)" />}
               
 
 
-              {/* Left Side Floating Dock Panel */}
-              <Panel 
-                position="top-left" 
-                className="flex flex-col items-center gap-6 pointer-events-none transition-all duration-300 ease-in-out !m-0"
-                style={{ top: "40%", transform: "translateY(-50%)", left: "24px" }}
-              >
-                <div className="pointer-events-auto shadow-ambient rounded-2xl bg-[#090C15]/50 border-white/5 pb-2 mb-2">
-                  <FloatingDock items={dockItems} />
-                </div>
-              </Panel>
+              {/* Left Side Floating Dock Panel removed per design request */}
 
               {/* Bottom-Left Toolbar: Undo / Redo / Zoom */}
               <Panel
@@ -487,15 +743,7 @@ export function Canvas() {
           </div>
         </HoverProvider>
 
-        {showLeftSidebar && (
-          <LeftSidebar
-            nodes={nodes}
-            setNodes={setNodes}
-            onAutoLayout={handleAutoLayout}
-            autoLayout={false}
-            onClose={() => setShowLeftSidebar(false)}
-          />
-        )}
+
 
         {isReviewsOpen && (
           <div 
@@ -511,7 +759,7 @@ export function Canvas() {
                 <span className="text-[10px] font-mono font-bold tracking-wider px-2 py-0.5 rounded bg-[#4A90D9]/10 border border-[#4A90D9]/20 text-[#4A90D9] uppercase">INTELLIGENCE</span>
                 <button 
                   onClick={() => setIsReviewsOpen(false)}
-                  className="text-white/40 hover:text-white hover:bg-white/[0.06] rounded-md text-xs p-1 px-1.5 transition-all"
+                  className="text-white/65 hover:text-white hover:bg-white/[0.06] rounded-md text-xs p-1 px-1.5 transition-all"
                 >
                   ✕
                 </button>
@@ -568,27 +816,150 @@ export function Canvas() {
           </div>
         )}
 
-        {showSidebar && (
-          <RightSidebar
+        {showUnifiedSidebar && (
+          <UnifiedSidebar
             nodes={nodes}
             setNodes={setNodes}
             edges={edges}
             setEdges={setEdges}
             selectedNodeId={selectedNodeId}
+            selectedEdgeId={selectedEdgeId}
+            setSelectedNodeId={setSelectedNodeId}
+            setSelectedEdgeId={setSelectedEdgeId}
             showGrid={showGrid}
             setShowGrid={setShowGrid}
             onAutoLayout={handleAutoLayout}
             onDeleteNode={requestDeleteNode}
+            generatedSql={generatedSql}
+            activeTab={sidebarTab}
+            setActiveTab={setSidebarTab}
+            onClose={() => setShowUnifiedSidebar(false)}
+            sqlDialect={sqlDialect}
+            setSqlDialect={setSqlDialect}
+            takeSnapshot={takeSnapshot}
           />
         )}
 
-        <BottomPanel
-          isSqlOpen={isSqlOpen}
-          setIsSqlOpen={setIsSqlOpen}
-          isReviewsOpen={isReviewsOpen}
-          setIsReviewsOpen={setIsReviewsOpen}
-          sql={generatedSql}
+        {/* Bottom popup SqlSandbox restored */}
+        <SqlSandbox
+          nodes={nodes}
+          isOpen={showSqlSandbox}
+          onClose={() => { setShowSqlSandbox(false); }}
         />
+
+        {tourStep !== null && (
+          <div className="absolute inset-0 z-50 pointer-events-none">
+            <div className="absolute inset-0 bg-[#030712]/50 backdrop-blur-[2px] transition-all" />
+
+            {tourStep === 1 && (
+              <div className="absolute bottom-28 left-1/2 -translate-x-1/2 pointer-events-auto w-[320px] bg-[#090C15]/95 border border-[#4A90D9]/50 rounded-2xl p-5 shadow-[0_20px_50px_rgba(0,0,0,0.8)] flex flex-col gap-3 animate-in zoom-in-95 duration-200">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] text-[#4A90D9] font-mono tracking-wider uppercase font-bold">Onboarding (Step 1/4)</span>
+                  <button onClick={skipTour} className="text-white/65 hover:text-white text-xs">Skip</button>
+                </div>
+                <h4 className="text-sm font-semibold text-white">Modify with AI Chatbox</h4>
+                <p className="text-[11px] text-white/65 leading-relaxed font-medium">
+                  Describe your system requirements in natural language in the prompt box below (e.g. &quot;Create a product inventory system&quot;), and DesignDB will auto-generate your 3NF tables and relationships.
+                </p>
+                <div className="flex justify-end gap-2 mt-1">
+                  <button 
+                    onClick={() => {
+                      setTourStep(2);
+                      setShowUnifiedSidebar(true);
+                      setSidebarTab("add");
+                    }}
+                    className="px-3.5 py-1.5 bg-[#4A90D9] text-[#C9C8C7] hover:bg-[#4A90D9]/90 text-[11px] font-bold rounded-lg transition-all"
+                  >
+                    Next Step
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {tourStep === 2 && (
+              <div className="absolute top-28 right-[370px] pointer-events-auto w-[320px] bg-[#090C15]/95 border border-[#4A90D9]/50 rounded-2xl p-5 shadow-[0_20px_50px_rgba(0,0,0,0.8)] flex flex-col gap-3 animate-in zoom-in-95 duration-200">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] text-[#4A90D9] font-mono tracking-wider uppercase font-bold">Onboarding (Step 2/4)</span>
+                  <button onClick={skipTour} className="text-white/65 hover:text-white text-xs">Skip</button>
+                </div>
+                <h4 className="text-sm font-semibold text-white">Unified Sidebar Panel</h4>
+                <p className="text-[11px] text-white/65 leading-relaxed font-medium">
+                  Use the consolidated right sidebar to manually create custom tables field-by-field, inspect and modify selected tables or relationships, and view real-time SQL DDL script code.
+                </p>
+                <div className="flex justify-end gap-2 mt-1">
+                  <button 
+                    onClick={() => setTourStep(1)}
+                    className="px-3 py-1.5 bg-white/5 hover:bg-white/10 text-white/70 hover:text-white text-[11px] font-bold rounded-lg transition-all"
+                  >
+                    Back
+                  </button>
+                  <button 
+                    onClick={() => setTourStep(3)}
+                    className="px-3.5 py-1.5 bg-[#4A90D9] text-[#C9C8C7] hover:bg-[#4A90D9]/90 text-[11px] font-bold rounded-lg transition-all"
+                  >
+                    Next Step
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {tourStep === 3 && (
+              <div className="absolute top-1/3 left-40 pointer-events-auto w-[320px] bg-[#090C15]/95 border border-[#4A90D9]/50 rounded-2xl p-5 shadow-[0_20px_50px_rgba(0,0,0,0.8)] flex flex-col gap-3 animate-in zoom-in-95 duration-200">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] text-[#4A90D9] font-mono tracking-wider uppercase font-bold">Onboarding (Step 3/4)</span>
+                  <button onClick={skipTour} className="text-white/65 hover:text-white text-xs">Skip</button>
+                </div>
+                <h4 className="text-sm font-semibold text-white">Interactive ERD Canvas</h4>
+                <p className="text-[11px] text-white/65 leading-relaxed font-medium">
+                  Drag connections between table handle nodes to relate attributes. Double-click any table to rename columns and change data types inline in the inspector.
+                </p>
+                <div className="flex justify-end gap-2 mt-1">
+                  <button 
+                    onClick={() => setTourStep(2)}
+                    className="px-3 py-1.5 bg-white/5 hover:bg-white/10 text-white/70 hover:text-white text-[11px] font-bold rounded-lg transition-all"
+                  >
+                    Back
+                  </button>
+                  <button 
+                    onClick={() => setTourStep(4)}
+                    className="px-3.5 py-1.5 bg-[#4A90D9] text-[#C9C8C7] hover:bg-[#4A90D9]/90 text-[11px] font-bold rounded-lg transition-all"
+                  >
+                    Next Step
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {tourStep === 4 && (
+              <div className="absolute top-20 right-6 pointer-events-auto w-[320px] bg-[#090C15]/95 border border-[#4A90D9]/50 rounded-2xl p-5 shadow-[0_20px_50px_rgba(0,0,0,0.8)] flex flex-col gap-3 animate-in zoom-in-95 duration-200">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] text-[#4A90D9] font-mono tracking-wider uppercase font-bold">Onboarding (Step 4/4)</span>
+                  <button onClick={skipTour} className="text-white/65 hover:text-white text-xs">Close</button>
+                </div>
+                <h4 className="text-sm font-semibold text-white">Export & Share Work</h4>
+                <p className="text-[11px] text-white/65 leading-relaxed font-medium">
+                  Click the &quot;Actions&quot; dropdown at the top-right to download your production-ready SQL scripts, Mermaid diagram code, or PNG image exports.
+                </p>
+                <div className="flex justify-end gap-2 mt-1">
+                  <button 
+                    onClick={() => setTourStep(3)}
+                    className="px-3 py-1.5 bg-white/5 hover:bg-white/10 text-white/70 hover:text-white text-[11px] font-bold rounded-lg transition-all"
+                  >
+                    Back
+                  </button>
+                  <button 
+                    onClick={completeTour}
+                    className="px-3.5 py-1.5 bg-lime-green text-[#030712] hover:bg-lime-green/90 text-[11px] font-bold rounded-lg transition-all shadow-[0_4px_12px_rgba(194,239,78,0.25)]"
+                  >
+                    Complete Tour
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+
 
         {/* Compact Expanding Chatbox — bottom-center, sidebar-aware */}
         <div 
@@ -725,6 +1096,18 @@ export function Canvas() {
             </div>
           </div>
         )}
+        <Dashboard
+          isOpen={showDashboard}
+          onClose={() => setShowDashboard(false)}
+          currentProjectId={currentProjectId}
+          setCurrentProjectId={setCurrentProjectId}
+          projectTitle={projectTitle}
+          setProjectTitle={setProjectTitle}
+          nodes={nodes}
+          edges={edges}
+          onLoadProject={onLoadProject}
+          onCreateNewProject={onCreateNewProject}
+        />
 
         <ToastContainer />
       </div>

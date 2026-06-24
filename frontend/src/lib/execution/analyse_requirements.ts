@@ -1,6 +1,5 @@
 import Groq from "groq-sdk";
 import { validateSchema } from "./utils/schema_validator";
-import { logger } from "./utils/logger";
 
 export interface AnalyzeRequest {
   userRequirements: string;
@@ -52,7 +51,7 @@ export async function analyzeRequirements(req: AnalyzeRequest): Promise<any> {
     let parsedJson;
     try {
       parsedJson = JSON.parse(content);
-    } catch (e) {
+    } catch {
       throw new Error('Groq did not return parseable JSON.');
     }
 

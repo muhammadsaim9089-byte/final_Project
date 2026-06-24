@@ -1,10 +1,9 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 import { 
   Play, Share2, FileCode2, FileType, Image as ImageIcon, Cloud, Check, Loader2, 
-  ChevronDown, Menu
+  ChevronDown
 } from "lucide-react";
 import { ReactFlowInstance } from "@xyflow/react";
 import { showToast } from "../ui/toast";
@@ -14,15 +13,22 @@ interface FloatingHeaderProps {
   generatedMermaid?: string;
   rfInstance?: ReactFlowInstance | null;
   showSidebar?: boolean;
+  projectTitle: string;
+  setProjectTitle: (title: string) => void;
+  currentProjectId: string | null;
+  setCurrentProjectId: (id: string | null) => void;
 }
 
 export function FloatingHeader({ 
   generatedSql, 
   generatedMermaid, 
   rfInstance, 
-  showSidebar = false,
+  showSidebar: _showSidebar = false,
+  projectTitle,
+  setProjectTitle,
+  currentProjectId,
+  setCurrentProjectId,
 }: FloatingHeaderProps) {
-  const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "success" | "error">("idle");
   const [validationState, setValidationState] = useState<"idle" | "validating" | "success" | "error">("idle");
@@ -55,16 +61,25 @@ export function FloatingHeader({
     setSaveState("saving");
     const nodes = rfInstance.getNodes();
     const edges = rfInstance.getEdges();
-    const title = "My DesignDB Schema";
+    const title = projectTitle || "Untitled Schema";
     const rawPrompt = sessionStorage.getItem("designdb_prompt") || "";
 
     try {
       const res = await fetch("/api/projects/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, rawPrompt, nodes, edges }),
+        body: JSON.stringify({
+          id: currentProjectId || undefined,
+          title,
+          rawPrompt,
+          nodes,
+          edges
+        }),
       });
       if (res.ok) {
+        const data = await res.json();
+        setCurrentProjectId(data.project.id);
+        setProjectTitle(data.project.title);
         setSaveState("success");
         showToast("Saved to cloud", "cloud");
         setTimeout(() => setSaveState("idle"), 3000);
@@ -175,21 +190,6 @@ export function FloatingHeader({
 
   return (
     <>
-      {/* Standalone Logo — top-left, icon only */}
-      <div className="absolute top-6 left-6 z-50 pointer-events-auto">
-        <button
-          onClick={() => router.push("/")}
-          className="w-11 h-11 rounded-xl bg-gradient-to-br from-lime-green to-[#0f2d12] shadow-[0_0_16px_rgba(194,239,78,0.25),0_8px_24px_rgba(0,0,0,0.4)] flex items-center justify-center border border-lime-green/20 hover:scale-110 hover:shadow-[0_0_24px_rgba(194,239,78,0.4)] transition-all duration-300 cursor-pointer"
-          aria-label="Go to home"
-        >
-          <svg width="16" height="16" viewBox="0 0 14 14" fill="none">
-            <rect x="1.5" y="1.5" width="4.5" height="4.5" rx="1" fill="#C2EF4E" />
-            <rect x="8" y="1.5" width="4.5" height="4.5" rx="1" fill="rgba(194,239,78,0.4)" />
-            <rect x="1.5" y="8" width="4.5" height="4.5" rx="1" fill="rgba(194,239,78,0.4)" />
-            <rect x="8" y="8" width="4.5" height="4.5" rx="1" fill="#C2EF4E" />
-          </svg>
-        </button>
-      </div>
 
       {/* Standalone Actions Button — top-right fixed */}
       <div 

@@ -36,7 +36,7 @@ export function TableNode(props: NodeProps) {
           </div>
           <div>
             <h3 className="font-bold tracking-wide text-xs text-white uppercase">{label}</h3>
-            <span className="text-[8px] font-mono text-white/30 uppercase tracking-widest">{attributes.length} columns</span>
+            <span className="font-sans font-semibold text-[10px] tracking-wider text-white/65 uppercase [font-variant:all-small-caps]">{attributes.length} columns</span>
           </div>
         </div>
         

@@ -33,7 +33,7 @@ export function IterativeCommandBar({ onSubmit, isGenerating }: Props) {
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
           placeholder={isGenerating ? "Synthesizing changes..." : "Modify architecture (e.g. Add an audit log table)..."}
-          className="flex-1 bg-transparent text-base text-white/90 placeholder:text-white/40 outline-none font-sans"
+          className="flex-1 bg-transparent text-base text-white/90 placeholder:text-white/65 outline-none font-sans"
           disabled={isGenerating}
         />
         <button
@@ -42,7 +42,7 @@ export function IterativeCommandBar({ onSubmit, isGenerating }: Props) {
           className="w-10 h-10 rounded-xl flex items-center justify-center transition-all disabled:opacity-50 disabled:cursor-not-allowed mr-1"
           style={{
              background: prompt.trim() && !isGenerating ? "linear-gradient(135deg, #1e549f 0%, #052c52 100%)" : "rgba(255,255,255,0.05)",
-             color: prompt.trim() && !isGenerating ? "white" : "rgba(255,255,255,0.4)",
+             color: prompt.trim() && !isGenerating ? "white" : "rgba(255,255,255,0.65)",
              border: prompt.trim() && !isGenerating ? "1px solid rgba(30,84,159,0.5)" : "1px solid transparent",
           }}
         >

@@ -73,7 +73,7 @@ interface CanvasLoaderProps {
 }
 
 export function CanvasLoader({ onComplete, totalMs = 8000 }: CanvasLoaderProps) {
-  const [exiting, setExiting] = useState(false);
+  const [exiting, _setExiting] = useState(false);
 
   useEffect(() => {
     const doneTimer = setTimeout(() => onComplete(), totalMs);

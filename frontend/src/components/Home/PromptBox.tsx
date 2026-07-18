@@ -78,6 +78,22 @@ export function PromptBox() {
             </button>
           ))}
         </div>
+
+        {/* Direct SQL DDL Import Option */}
+        <div className="mt-4 flex flex-col items-center gap-1.5 text-xs text-white/40">
+          <div className="flex items-center gap-1.5">
+            <span>Or have existing SQL DDL?</span>
+            <button
+              onClick={() => {
+                sessionStorage.setItem("designdb_action", "import");
+                setLoading(true);
+              }}
+              className="text-[#4a90d9] hover:text-[#7eb8f7] font-semibold underline transition-colors"
+            >
+              Import SQL DDL directly
+            </button>
+          </div>
+        </div>
       </div>
     </>
   );

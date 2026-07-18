@@ -1,5 +1,6 @@
 import { Canvas } from "@/components/Canvas/Canvas";
 import { ReactFlowProvider } from "@xyflow/react";
+import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 
 export const metadata = {
   title: "DesignDB — Canvas",
@@ -10,7 +11,9 @@ export default function CanvasPage() {
   return (
     <main className="w-full h-full relative">
       <ReactFlowProvider>
-        <Canvas />
+        <ErrorBoundary>
+          <Canvas />
+        </ErrorBoundary>
       </ReactFlowProvider>
     </main>
   );

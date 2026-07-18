@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useLayout } from "@/components/Layout/LayoutContext";
-import { Play, RotateCcw, AlertTriangle, CheckCircle, Database, Table, HelpCircle, Loader2 } from "lucide-react";
+import { Play, RotateCcw, AlertTriangle, CheckCircle, Database, Table, HelpCircle, Loader2, Sparkles } from "lucide-react";
 import { Node } from "@xyflow/react";
 
 interface SqlSandboxProps {
@@ -33,6 +33,11 @@ export function SqlSandbox({ nodes, isOpen, onClose, embedded = false }: SqlSand
   const [isLoading, setIsLoading] = useState(false);
   const [dbReady, setDbReady] = useState(false);
   const [execTime, setExecTime] = useState<number | null>(null);
+
+  // AI Query Generator state
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState("");
 
   // Hold reference to the sql.js DB instance
   const dbRef = useRef<any>(null);
@@ -262,6 +267,37 @@ export function SqlSandbox({ nodes, isOpen, onClose, embedded = false }: SqlSand
     }
   };
 
+  // AI Query Generator
+  const handleAiGenerate = async () => {
+    if (!aiPrompt.trim()) return;
+    setAiLoading(true);
+    setAiError("");
+    try {
+      const res = await fetch("/api/ai-query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: aiPrompt, tables: tablesList }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "AI generation failed");
+      if (data.query) {
+        setQuery(data.query);
+        setAiPrompt("");
+      }
+    } catch (err: any) {
+      setAiError(err.message || "Failed to generate query");
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const handleAiKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleAiGenerate();
+    }
+  };
+
   if (!isOpen) return null;
 
   const containerClass = embedded
@@ -353,6 +389,37 @@ export function SqlSandbox({ nodes, isOpen, onClose, embedded = false }: SqlSand
                     </div>
                   </div>
                 ))
+              )}
+            </div>
+
+            {/* AI Query Generator */}
+            <div className="shrink-0 flex flex-col gap-1.5">
+              <div className="flex items-center gap-1.5">
+                <div className="flex-1 relative">
+                  <div className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#b38fff]/60 pointer-events-none">
+                    <Sparkles size={11} />
+                  </div>
+                  <input
+                    type="text"
+                    value={aiPrompt}
+                    onChange={(e) => setAiPrompt(e.target.value)}
+                    onKeyDown={handleAiKeyDown}
+                    placeholder='Ask AI: "show top 5 customers by total orders"'
+                    className="w-full bg-[#0A0E1A] border border-[#b38fff]/20 rounded-lg pl-8 pr-2.5 py-1.5 text-[11px] text-white/80 placeholder-white/25 font-mono outline-none focus:border-[#b38fff]/50 transition-colors"
+                    disabled={aiLoading || !dbReady}
+                  />
+                </div>
+                <button
+                  onClick={handleAiGenerate}
+                  disabled={aiLoading || !aiPrompt.trim() || !dbReady}
+                  className="flex items-center gap-1 px-2.5 py-1.5 text-[10px] font-bold rounded-lg bg-gradient-to-r from-[#b38fff]/20 to-[#4A90D9]/20 border border-[#b38fff]/30 text-[#b38fff] hover:from-[#b38fff]/30 hover:to-[#4A90D9]/30 transition-all disabled:opacity-30 whitespace-nowrap"
+                >
+                  {aiLoading ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />}
+                  Generate
+                </button>
+              </div>
+              {aiError && (
+                <span className="text-[9px] text-red-400/80 font-mono pl-1">{aiError}</span>
               )}
             </div>
 

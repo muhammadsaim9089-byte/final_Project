@@ -41,6 +41,37 @@
     
     --radius: 0.75rem;
   }
+
+  /* ═══ LIGHT THEME OVERRIDES ═══ */
+  html.light {
+    --background: 220 20% 97%;
+    --foreground: 222 47% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+
+    --primary: 262 83% 58%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 220 14% 94%;
+    --secondary-foreground: 222 47% 11%;
+
+    --muted: 220 14% 92%;
+    --muted-foreground: 215 16% 47%;
+
+    --accent: 262 83% 58%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 13% 88%;
+    --input: 220 13% 88%;
+    --ring: 262 83% 58%;
+  }
 }
 
 @layer base {
@@ -228,4 +259,137 @@
 /* Cursor blink rate override for code editors */
 .caret-\[\#4A90D9\] {
   caret-color: #4A90D9;
+}
+
+/* ═══════════════════════════════════════════════════════════ */
+/* ═══ LIGHT MODE GLOBAL OVERRIDES ═══                        */
+/* Override hardcoded dark RGBA/hex backgrounds for light mode */
+/* ═══════════════════════════════════════════════════════════ */
+
+html.light body {
+  background: #f0f2f7 !important;
+  color: #1a1d2e !important;
+}
+
+/* Navigation Sidebar */
+html.light nav.fixed {
+  background: rgba(255, 255, 255, 0.85) !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06) !important;
+}
+html.light nav.fixed button {
+  color: #3a3f5c !important;
+}
+html.light nav.fixed button:hover {
+  color: #1a1d2e !important;
+  background: rgba(0, 0, 0, 0.04) !important;
+}
+
+/* Glass panels (sidebars, popups) */
+html.light .glass-panel {
+  background: rgba(255, 255, 255, 0.88) !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08) !important;
+  color: #1a1d2e !important;
+}
+html.light .ethereal-panel {
+  background: rgba(255, 255, 255, 0.75) !important;
+  border-color: rgba(0, 0, 0, 0.06) !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.06) !important;
+}
+
+/* Node / Table cards */
+html.light .node-panel {
+  background: rgba(255, 255, 255, 0.92) !important;
+  border-color: rgba(0, 0, 0, 0.1) !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06) !important;
+  color: #1a1d2e !important;
+}
+html.light .node-panel:hover {
+  border-color: rgba(124, 58, 237, 0.3) !important;
+  box-shadow: 0 8px 24px rgba(124, 58, 237, 0.08) !important;
+}
+
+/* ReactFlow canvas area */
+html.light .react-flow {
+  background: #eef0f5 !important;
+}
+html.light .react-flow__background {
+  opacity: 0.5;
+}
+html.light .react-flow__minimap {
+  background: #ffffff !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+html.light .react-flow__controls {
+  background: #ffffff !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+html.light .react-flow__controls button {
+  background: #ffffff !important;
+  color: #3a3f5c !important;
+  border-color: rgba(0, 0, 0, 0.06) !important;
+}
+html.light .react-flow__controls button:hover {
+  background: #f0f2f7 !important;
+}
+
+/* Canvas vignette - soften in light mode */
+html.light .canvas-vignette {
+  background: radial-gradient(ellipse at center, transparent 50%, rgba(240, 242, 247, 0.4) 100%) !important;
+}
+
+/* Floating header / toolbar panels */
+html.light [class*="bg-[#0"] {
+  background: rgba(255, 255, 255, 0.9) !important;
+  color: #1a1d2e !important;
+}
+html.light [class*="border-white/"] {
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+/* Text color overrides */
+html.light [class*="text-white"] {
+  color: #1a1d2e !important;
+}
+html.light [class*="text-slate-"] {
+  color: #3a3f5c !important;
+}
+
+/* Scrollbar - light mode */
+html.light .p-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.12) !important;
+}
+html.light .p-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.22) !important;
+}
+
+/* Input fields */
+html.light input, html.light select, html.light textarea {
+  background: rgba(0, 0, 0, 0.03) !important;
+  border-color: rgba(0, 0, 0, 0.12) !important;
+  color: #1a1d2e !important;
+}
+html.light input::placeholder {
+  color: rgba(0, 0, 0, 0.4) !important;
+}
+
+/* Animated dot grid - light mode */
+html.light .animated-dot-grid::before,
+html.light .animated-dot-grid::after {
+  background-image: radial-gradient(circle, rgba(124, 58, 237, 0.08) 1px, transparent 1px) !important;
+}
+
+/* ===== Spotlight Search Pulse on Table Nodes ===== */
+@keyframes spotlightPulse {
+  0%   { box-shadow: 0 0 0 0 rgba(74, 144, 217, 0.6), 0 0 20px rgba(74, 144, 217, 0.3); }
+  50%  { box-shadow: 0 0 0 12px rgba(74, 144, 217, 0), 0 0 40px rgba(74, 144, 217, 0.15); }
+  100% { box-shadow: 0 0 0 0 rgba(74, 144, 217, 0.6), 0 0 20px rgba(74, 144, 217, 0.3); }
+}
+
+.spotlight-pulse-node {
+  animation: spotlightPulse 1s ease-in-out infinite;
+  border-color: rgba(74, 144, 217, 0.6) !important;
+  ring: 2px solid rgba(74, 144, 217, 0.4);
+  z-index: 50;
 }

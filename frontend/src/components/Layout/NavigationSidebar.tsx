@@ -1,16 +1,23 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { AnimatePresence, motion } from "motion/react";
-import { FolderOpen, PlusSquare, Component, LayoutTemplate, Database, Sparkles, Cable } from "lucide-react";
+import { FolderOpen, PlusSquare, Component, LayoutTemplate, Database, Sparkles, Cable, Sun, Moon } from "lucide-react";
+import { useTheme } from "next-themes";
 import { useLayout } from "./LayoutContext";
 
 export function NavigationSidebar() {
   const layout = useLayout();
+  const { theme, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
 
   const router = useRouter();
   const pathname = usePathname();
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // hide sidebar on the root (main) page
   if (pathname === "/") return null;
@@ -32,7 +39,6 @@ export function NavigationSidebar() {
       <div className="relative group">
         <button
           onClick={() => onClick?.()}
-          title={label}
           onMouseEnter={() => setHovered(true)}
           onMouseLeave={() => setHovered(false)}
           className={`w-11 h-11 rounded-lg flex items-center justify-center transition-all duration-200 ${
@@ -79,7 +85,18 @@ export function NavigationSidebar() {
         ))}
       </div>
 
-      <div className="w-full flex items-center justify-center pb-4">
+      <div className="w-full flex flex-col items-center gap-3 pb-4">
+        {/* Theme Toggle Button */}
+        {mounted && (
+          <IconButton
+            id="theme-toggle"
+            label={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} Mode`}
+            icon={theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+          />
+        )}
+        
+        {/* SQL Panel Toggle */}
         <IconButton id="sql-toggle" label="Toggle SQL Code Workspace" icon={(
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M4 6h16M4 12h10M4 18h16" stroke="#fff" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" opacity="0.9" />

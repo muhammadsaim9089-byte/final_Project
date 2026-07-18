@@ -19,6 +19,7 @@ export interface ParsedRelationship {
   fromEntity: string; // The child table (has the foreign key)
   toEntity: string;   // The parent table (has the primary key)
   foreignKey: string;
+  referencedKey?: string; // The primary key column in the parent table
   type: string;       // e.g. 'one-to-many'
 }
 
@@ -41,7 +42,7 @@ export function parseSqlDdl(sql: string): ParsedSchema {
     .trim();
 
   // Split by CREATE TABLE statements
-  const createTableRegex = /CREATE\s+TABLE\s+(\w+|"\w+")\s*\((.*?)\)(?=\s*(?:CREATE|ALTER|INSERT|DROP|;|$))/gi;
+  const createTableRegex = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+|"\w+")\s*\((.*?)\)(?=\s*(?:CREATE|ALTER|INSERT|DROP|;|$))/gi;
   let match;
 
   while ((match = createTableRegex.exec(cleanSql)) !== null) {
@@ -96,11 +97,12 @@ export function parseSqlDdl(sql: string): ParsedSchema {
         if (fkMatch) {
           const fkCol = fkMatch[1].replace(/"/g, '').trim();
           const refTable = fkMatch[2].replace(/"/g, '').trim();
-          const _refCol = fkMatch[3].replace(/"/g, '').trim();
+          const refCol = fkMatch[3].replace(/"/g, '').trim();
           schema.relationships.push({
             fromEntity: tableName,
             toEntity: refTable,
             foreignKey: fkCol,
+            referencedKey: refCol,
             type: 'one-to-many'
           });
           tableConstraints.push(`FK:${fkCol}`);
@@ -118,11 +120,12 @@ export function parseSqlDdl(sql: string): ParsedSchema {
           if (fkMatch) {
             const fkCol = fkMatch[1].replace(/"/g, '').trim();
             const refTable = fkMatch[2].replace(/"/g, '').trim();
-            const _refCol = fkMatch[3].replace(/"/g, '').trim();
+            const refCol = fkMatch[3].replace(/"/g, '').trim();
             schema.relationships.push({
               fromEntity: tableName,
               toEntity: refTable,
               foreignKey: fkCol,
+              referencedKey: refCol,
               type: 'one-to-many'
             });
             tableConstraints.push(`FK:${fkCol}`);
@@ -161,11 +164,12 @@ export function parseSqlDdl(sql: string): ParsedSchema {
         const refMatch = line.match(/REFERENCES\s+(\w+|"\w+")\s*\((.*?)\)/i);
         if (refMatch) {
           const refTable = refMatch[1].replace(/"/g, '').trim();
-          const _refCol = refMatch[2].replace(/"/g, '').trim();
+          const refCol = refMatch[2].replace(/"/g, '').trim();
           schema.relationships.push({
             fromEntity: tableName,
             toEntity: refTable,
             foreignKey: colName,
+            referencedKey: refCol,
             type: 'one-to-many'
           });
         }
@@ -198,12 +202,13 @@ export function parseSqlDdl(sql: string): ParsedSchema {
     const fromTable = match[1].replace(/"/g, '').trim();
     const fkCol = match[2].replace(/"/g, '').trim();
     const toTable = match[3].replace(/"/g, '').trim();
-    const _refCol = match[4].replace(/"/g, '').trim();
+    const refCol = match[4].replace(/"/g, '').trim();
 
     schema.relationships.push({
       fromEntity: fromTable,
       toEntity: toTable,
       foreignKey: fkCol,
+      referencedKey: refCol,
       type: 'one-to-many'
     });
 

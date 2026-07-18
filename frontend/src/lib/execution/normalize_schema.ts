@@ -79,7 +79,21 @@ function apply1NF(schema: Schema, logs: string[]): { schema: Schema, changed: bo
     }
 
     for (const attr of entity.attributes) {
-      if (!attr.isPrimaryKey && (attr.name.endsWith('s') && attr.name !== 'status' && attr.name !== 'address' || attr.name.includes('_list'))) {
+      const isRepeatingGroup = (() => {
+        if (attr.isPrimaryKey) return false;
+        if (attr.name.includes('_list')) return true;
+        if (attr.name.includes('_array')) return true;
+        const lower = attr.name.toLowerCase();
+        const KNOWN_SAFE_SINGULAR_S = [
+          'status', 'address', 'class', 'progress', 'analysis', 
+          'business', 'gross', 'campus', 'census', 'basis', 
+          'alias', 'bonus', 'diagnosis', 'access', 'process'
+        ];
+        if (KNOWN_SAFE_SINGULAR_S.some(s => lower.endsWith(s))) return false;
+        return lower.endsWith('s');
+      })();
+
+      if (isRepeatingGroup) {
          const newEntityName = `${entity.name}_${attr.name.replace(/_list|s$/g, '')}`;
          const newPkName = `${newEntityName}_id`;
          

@@ -13,6 +13,7 @@ export const EntitySchema = z.object({
   name: z.string(),
   description: z.string().optional(),
   attributes: z.array(AttributeSchema),
+  seedData: z.array(z.record(z.any())).optional(),
 });
 
 export const RelationshipSchema = z.object({

@@ -3,10 +3,12 @@
 import { useCallback, useState } from "react";
 import { 
   Play, Share2, FileCode2, FileType, Image as ImageIcon, Cloud, Check, Loader2, 
-  ChevronDown
+  ChevronDown, FileImage, FileText
 } from "lucide-react";
 import { ReactFlowInstance } from "@xyflow/react";
 import { showToast } from "../ui/toast";
+import { useLayout } from "@/components/Layout/LayoutContext";
+import { validateCanvasSchema } from "@/lib/canvasValidation";
 
 interface FloatingHeaderProps {
   generatedSql?: string;
@@ -17,6 +19,7 @@ interface FloatingHeaderProps {
   setProjectTitle: (title: string) => void;
   currentProjectId: string | null;
   setCurrentProjectId: (id: string | null) => void;
+
 }
 
 export function FloatingHeader({ 
@@ -28,6 +31,7 @@ export function FloatingHeader({
   setProjectTitle,
   currentProjectId,
   setCurrentProjectId,
+
 }: FloatingHeaderProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "success" | "error">("idle");
@@ -97,18 +101,103 @@ export function FloatingHeader({
     }
   };
 
+  const layout = useLayout();
+
+  const checkValidationBeforeExport = useCallback((): boolean => {
+    if (!rfInstance) return true;
+    const nodes = rfInstance.getNodes();
+    const edges = rfInstance.getEdges();
+    const validation = validateCanvasSchema(nodes, edges);
+    const criticalErrors = Object.values(validation.errors).flat();
+    
+    if (criticalErrors.length > 0) {
+      showToast(`Export blocked: Resolve ${criticalErrors.length} critical errors first.`, "error");
+      layout.triggerToggleAiInsights();
+      return false;
+    }
+    return true;
+  }, [rfInstance, layout]);
+
   const handleDownloadSql = () => {
+    if (!checkValidationBeforeExport()) return;
     downloadAsFile(generatedSql || "", "designdb_schema.sql", "application/sql");
     showToast("SQL script downloaded", "download");
   };
 
   const handleDownloadMermaid = () => {
+    if (!checkValidationBeforeExport()) return;
     downloadAsFile(generatedMermaid || "", "designdb_erd.mmd", "text/plain");
     showToast("Mermaid file downloaded", "download");
   };
 
+  const handleDownloadSvg = useCallback(() => {
+    if (!rfInstance) return;
+    if (!checkValidationBeforeExport()) return;
+    const flowWrapper = document.querySelector(".react-flow") as HTMLElement | null;
+    if (!flowWrapper) return;
+
+    const { width, height } = flowWrapper.getBoundingClientRect();
+    const clone = flowWrapper.cloneNode(true) as HTMLElement;
+    clone.querySelectorAll(".react-flow__controls, .react-flow__panel, .react-flow__minimap").forEach(el => el.remove());
+
+    let cssStyles = "";
+    try {
+      const sheets = Array.from(document.styleSheets);
+      for (const sheet of sheets) {
+        if (!sheet.href || sheet.href.startsWith(window.location.origin)) {
+          const rules = Array.from(sheet.cssRules);
+          for (const rule of rules) {
+            cssStyles += rule.cssText;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Could not copy document styles for SVG export:", e);
+    }
+
+    const computedStyle = getComputedStyle(document.documentElement);
+    const themeColor = computedStyle.getPropertyValue('--theme-color').trim() || '#6a5fc1';
+    const nodeFont = computedStyle.getPropertyValue('--node-font').trim() || 'Vagnola, sans-serif';
+    const nodeOpacity = computedStyle.getPropertyValue('--node-opacity').trim() || '1';
+
+    const svgData = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+        <style>
+          ${cssStyles}
+          :root {
+            --theme-color: ${themeColor};
+            --node-font: ${nodeFont};
+            --node-opacity: ${nodeOpacity};
+          }
+          body, div, span, h3 {
+            font-family: ${nodeFont}, system-ui, sans-serif !important;
+          }
+        </style>
+        <foreignObject width="100%" height="100%">
+          <div xmlns="http://www.w3.org/1999/xhtml" style="width:${width}px;height:${height}px;background:#0a0f1e;position:relative;">
+            ${clone.outerHTML}
+          </div>
+        </foreignObject>
+      </svg>`;
+
+    const blob = new Blob([svgData], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.style.display = "none";
+    a.href = url;
+    a.download = "designdb_erd.svg";
+    document.body.appendChild(a);
+    a.click();
+    showToast("SVG vector image downloaded", "download");
+    setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 500);
+  }, [rfInstance, checkValidationBeforeExport]);
+
   const handleDownloadPng = useCallback(() => {
     if (!rfInstance) return;
+    if (!checkValidationBeforeExport()) return;
     const flowWrapper = document.querySelector(".react-flow") as HTMLElement | null;
     if (!flowWrapper) return;
 
@@ -138,12 +227,22 @@ export function FloatingHeader({
       console.warn("Could not copy document styles for SVG export:", e);
     }
 
+    const computedStyle = getComputedStyle(document.documentElement);
+    const themeColor = computedStyle.getPropertyValue('--theme-color').trim() || '#6a5fc1';
+    const nodeFont = computedStyle.getPropertyValue('--node-font').trim() || 'Vagnola, sans-serif';
+    const nodeOpacity = computedStyle.getPropertyValue('--node-opacity').trim() || '1';
+
     const svgData = `
       <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
         <style>
           ${cssStyles}
+          :root {
+            --theme-color: ${themeColor};
+            --node-font: ${nodeFont};
+            --node-opacity: ${nodeOpacity};
+          }
           body, div, span, h3 {
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+            font-family: ${nodeFont}, system-ui, sans-serif !important;
           }
         </style>
         <foreignObject width="100%" height="100%">
@@ -154,36 +253,123 @@ export function FloatingHeader({
       </svg>`;
 
     const img = new window.Image();
-    img.onload = async () => {
+    img.onload = () => {
       ctx.scale(scale, scale);
       ctx.drawImage(img, 0, 0);
       const dataUrl = canvas.toDataURL("image/png");
-
-      const res = await fetch("/api/download-png", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ dataUrl }),
-      });
-      if (!res.ok) {
-        showToast("Failed to download PNG", "error");
-        return;
-      }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.style.display = "none";
-      a.href = url;
+      a.href = dataUrl;
       a.download = "designdb_erd.png";
       document.body.appendChild(a);
       a.click();
       showToast("PNG image downloaded", "download");
       setTimeout(() => {
         document.body.removeChild(a);
-        URL.revokeObjectURL(url);
       }, 500);
     };
     img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svgData);
-  }, [rfInstance]);
+  }, [rfInstance, checkValidationBeforeExport]);
+
+  const handleDownloadPdf = useCallback(() => {
+    if (!rfInstance) return;
+    if (!checkValidationBeforeExport()) return;
+    const flowWrapper = document.querySelector(".react-flow") as HTMLElement | null;
+    if (!flowWrapper) return;
+
+    const { width, height } = flowWrapper.getBoundingClientRect();
+    const clone = flowWrapper.cloneNode(true) as HTMLElement;
+    clone.querySelectorAll(".react-flow__controls, .react-flow__panel, .react-flow__minimap").forEach(el => el.remove());
+
+    let cssStyles = "";
+    try {
+      const sheets = Array.from(document.styleSheets);
+      for (const sheet of sheets) {
+        if (!sheet.href || sheet.href.startsWith(window.location.origin)) {
+          const rules = Array.from(sheet.cssRules);
+          for (const rule of rules) {
+            cssStyles += rule.cssText;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Could not copy document styles for PDF export:", e);
+    }
+
+    const computedStyle = getComputedStyle(document.documentElement);
+    const themeColor = computedStyle.getPropertyValue('--theme-color').trim() || '#6a5fc1';
+    const nodeFont = computedStyle.getPropertyValue('--node-font').trim() || 'Vagnola, sans-serif';
+
+    const printHtml = `
+      <html>
+        <head>
+          <title>DesignDB ERD Export</title>
+          <style>
+            ${cssStyles}
+            :root {
+              --theme-color: ${themeColor};
+              --node-font: ${nodeFont};
+            }
+            body, div, span, h3 {
+              font-family: ${nodeFont}, system-ui, sans-serif !important;
+            }
+            body {
+              margin: 0;
+              padding: 0;
+              background: #0a0f1e;
+              display: flex;
+              justify-content: center;
+              align-items: center;
+              width: 100vw;
+              height: 100vh;
+              overflow: hidden;
+            }
+            @media print {
+              body {
+                background: #ffffff !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+              }
+              .container {
+                background: #ffffff !important;
+              }
+            }
+            .container {
+              width: ${width}px;
+              height: ${height}px;
+              position: relative;
+              background: #0a0f1e;
+              transform: scale(min(1, min(800 / ${width}, 1100 / ${height})));
+              transform-origin: center center;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            ${clone.outerHTML}
+          </div>
+          <script>
+            window.onload = () => {
+              setTimeout(() => {
+                window.print();
+                window.close();
+              }, 500);
+            };
+          </script>
+        </body>
+      </html>
+    `;
+
+    const popup = window.open("", "_blank");
+    if (popup) {
+      popup.document.open();
+      popup.document.write(printHtml);
+      popup.document.close();
+      showToast("PDF document downloaded via print utility", "download");
+    } else {
+      showToast("Popup blocked! Enable popups to print/save as PDF", "error");
+    }
+  }, [rfInstance, checkValidationBeforeExport]);
 
   const hasSql = !!generatedSql && !generatedSql.startsWith("-- DesignDB: No prompt") && !generatedSql.startsWith("-- Error");
   const hasMermaid = !!generatedMermaid;
@@ -193,8 +379,10 @@ export function FloatingHeader({
 
       {/* Standalone Actions Button — top-right fixed */}
       <div 
-        className="absolute top-6 right-6 z-50 pointer-events-auto transition-all duration-300 ease-in-out"
+        className="absolute top-6 right-6 z-50 pointer-events-auto transition-all duration-300 ease-in-out flex items-center gap-3"
       >
+
+
         <div className="relative">
           {/* Split Drop Menu Button Container */}
           <div className="flex items-center rounded-full overflow-hidden shadow-[0_4px_16px_rgba(0,0,0,0.2)] focus-within:ring-2 focus-within:ring-white/20 transition-all">
@@ -252,18 +440,28 @@ export function FloatingHeader({
                   onClick={() => {
                     setMenuOpen(false);
                     if (validationState !== "idle") return;
-                    if (!generatedSql) {
+                    if (!rfInstance) {
                       setValidationState("error");
-                      showToast("No schema to validate", "error");
+                      showToast("No canvas instance to validate", "error");
                       setTimeout(() => setValidationState("idle"), 2000);
                       return;
                     }
                     setValidationState("validating");
                     setTimeout(() => {
-                      setValidationState("success");
-                      showToast("Schema validated ✓", "validate");
+                      const nodes = rfInstance.getNodes();
+                      const edges = rfInstance.getEdges();
+                      const validation = validateCanvasSchema(nodes, edges);
+                      if (validation.isValid) {
+                        setValidationState("success");
+                        showToast("Schema is fully valid ✓", "validate");
+                      } else {
+                        const errorCount = Object.values(validation.errors).flat().length;
+                        setValidationState("error");
+                        showToast(`Schema validation failed with ${errorCount} error(s) ✕`, "error");
+                        layout.triggerToggleAiInsights();
+                      }
                       setTimeout(() => setValidationState("idle"), 3000);
-                    }, 1500);
+                    }, 1000);
                   }}
                   disabled={validationState !== "idle"}
                   className="flex items-center gap-2.5 px-3.5 py-2 text-xs rounded-xl transition-all text-white/70 hover:text-white hover:bg-white/[0.05] disabled:opacity-50 font-medium"
@@ -321,6 +519,26 @@ export function FloatingHeader({
                 >
                   <ImageIcon size={14} className="text-coral-accent" />
                   PNG Image
+                </button>
+
+                {/* SVG Export */}
+                <button
+                  onClick={() => { handleDownloadSvg(); setMenuOpen(false); }}
+                  disabled={!rfInstance}
+                  className="flex items-center gap-2.5 px-3.5 py-2 text-xs rounded-xl transition-all disabled:opacity-30 disabled:cursor-not-allowed text-white/70 hover:text-white hover:bg-white/[0.05] font-medium"
+                >
+                  <FileImage size={14} className="text-amber-400" />
+                  SVG Vector
+                </button>
+
+                {/* PDF Export */}
+                <button
+                  onClick={() => { handleDownloadPdf(); setMenuOpen(false); }}
+                  disabled={!rfInstance}
+                  className="flex items-center gap-2.5 px-3.5 py-2 text-xs rounded-xl transition-all disabled:opacity-30 disabled:cursor-not-allowed text-white/70 hover:text-white hover:bg-white/[0.05] font-medium"
+                >
+                  <FileText size={14} className="text-sky-400" />
+                  PDF Document
                 </button>
 
               </div>

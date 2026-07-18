@@ -13,7 +13,8 @@ import {
   BackgroundVariant,
   Panel,
   ReactFlowInstance,
-  Position
+  Position,
+  MiniMap
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import dagre from 'dagre';
@@ -22,21 +23,31 @@ import { FloatingHeader } from "./FloatingHeader";
 import { useLayout } from "@/components/Layout/LayoutContext";
 import { ToastContainer } from "../ui/toast";
 import { TableNode } from "./Nodes/TableNode";
+import { StickyNoteNode } from "./Nodes/StickyNoteNode";
+import { TableGroupNode } from "./Nodes/TableGroupNode";
 import { PulseEdge } from "./Edges/PulseEdge";
 import { CrowsFootEdge } from "./Edges/CrowsFootEdge";
 import { HoverProvider } from "./HoverContext";
   
 import { DataTypesPanel } from "./DataTypesPanel";
 import { CursorDotGrid } from "./CursorDotGrid";
-import { CanvasToolbar } from "./CanvasToolbar";
+import { CanvasToolbar, type DetailsLevel } from "./CanvasToolbar";
+import { validateCanvasSchema } from '@/lib/canvasValidation';
+import { generateTables } from '@/lib/execution/export_sql';
+import { Schema } from '@/lib/execution/utils/schema_validator';
 import { useUndoRedo } from "@/hooks/useUndoRedo";
 import { UnifiedSidebar } from "./UnifiedSidebar";
 import { SqlSandbox } from "./SqlSandbox";
 import { Dashboard } from "./Dashboard";
+import { SpotlightSearch } from "./SpotlightSearch";
+import { ShortcutsModal } from "./ShortcutsModal";
+import { showToast } from "../ui/toast";
 import { Loader2, ArrowRight, Sparkles } from 'lucide-react';
 
 const nodeTypes = {
   tableMode: TableNode,
+  stickyNote: StickyNoteNode,
+  tableGroup: TableGroupNode,
 };
 
 const edgeTypes = {
@@ -82,6 +93,43 @@ const getLayoutedElements = (nodes: Node[], edges: Edge[], direction = 'LR') => 
   return { nodes: layoutedNodes, edges };
 };
 
+const serializeCanvasToSchema = (nodes: Node[], edges: Edge[]): Schema => {
+  const entities = nodes.map(node => {
+    const attributes = ((node.data.attributes as any[]) || []).map(attr => ({
+      name: attr.name,
+      dataType: attr.type || 'varchar(255)',
+      isPrimaryKey: !!attr.isPk,
+      isNullable: !attr.isPk && !attr.required,
+      isUnique: !!attr.unique,
+      defaultValue: attr.defaultValue || null,
+    }));
+    
+    return {
+      name: node.data.label as string,
+      attributes,
+      seedData: (node.data.seedData as any[]) || [],
+    };
+  });
+
+  const relationships = edges.map(edge => {
+    const fromNode = nodes.find(n => n.id === edge.target); // child
+    const toNode = nodes.find(n => n.id === edge.source); // parent
+    if (!fromNode || !toNode) return null;
+    
+    return {
+      fromEntity: fromNode.data.label as string,
+      toEntity: toNode.data.label as string,
+      type: (edge.data?.relationshipType as any) || 'many-to-one',
+      foreignKey: (edge.data?.targetColumn as string) || (edge.data?.targetField as string) || '',
+      referencedKey: (edge.data?.sourceColumn as string) || (edge.data?.sourceField as string) || 'id',
+      onDelete: (edge.data?.onDelete as any) || 'NO ACTION',
+      onUpdate: (edge.data?.onUpdate as any) || 'CASCADE',
+    };
+  }).filter(Boolean) as any[];
+
+  return { entities, relationships };
+};
+
 export function Canvas() {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -113,6 +161,349 @@ export function Canvas() {
   const [layoutDirection, setLayoutDirection] = useState<'LR' | 'TB'>('LR');
   const [edgeStyle, setEdgeStyle] = useState<'crowsFoot' | 'pulseMode'>('crowsFoot');
   const [isReviewsOpen, setIsReviewsOpen] = useState(false);
+  const [detailsLevel, setDetailsLevel] = useState<DetailsLevel>("all");
+
+  // Normalization Audit & Wizard States
+  const [auditSteps, setAuditSteps] = useState<string[]>([]);
+  const [currentStepIdx, setCurrentStepIdx] = useState<number>(-1);
+  const [isAuditing, setIsAuditing] = useState(false);
+  const [auditTab, setAuditTab] = useState<"log" | "wizard">("log");
+
+  const runAudit = async () => {
+    setIsAuditing(true);
+    try {
+      const currentSchema = serializeCanvasToSchema(nodes, edges);
+      const res = await fetch("/api/audit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ schema: currentSchema, strictMode: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to run audit");
+      
+      const reportText = data.report || "";
+      setAiInsightReport(reportText);
+
+      const steps: string[] = [];
+      reportText.split("\n").forEach((line: string) => {
+        const trimmed = line.trim();
+        if (trimmed.startsWith("- [1NF]") || trimmed.startsWith("- [2NF]") || trimmed.startsWith("- [3NF]")) {
+          steps.push(trimmed.substring(2)); // Strip "- "
+        }
+      });
+
+      setAuditSteps(steps);
+      if (steps.length > 0) {
+        setCurrentStepIdx(0);
+        setAuditTab("wizard");
+        showToast(`Audit complete: Found ${steps.length} normalization recommendation(s).`, "validate");
+      } else {
+        setCurrentStepIdx(-1);
+        setAuditTab("log");
+        showToast("Your schema is already fully normalized (3NF compliant)! ✨", "success");
+      }
+    } catch (err: any) {
+      showToast(err.message || "Failed to audit schema", "error");
+    } finally {
+      setIsAuditing(false);
+    }
+  };
+
+  const getTableFromStep = (stepText: string): string | null => {
+    const pkMatch = stepText.match(/into '(\w+)'/);
+    if (pkMatch) return pkMatch[1];
+
+    const repeatingMatch = stepText.match(/from '(\w+)'/);
+    if (repeatingMatch) return repeatingMatch[1];
+
+    const partialMatch = stepText.match(/from '(\w+)'/);
+    if (partialMatch) return partialMatch[1];
+
+    const transitiveMatch = stepText.match(/from '(\w+)'/);
+    if (transitiveMatch) return transitiveMatch[1];
+
+    const strictMatch = stepText.match(/moved \[(.*?)\] into '(\w+)'/);
+    if (strictMatch) {
+      const cols = strictMatch[1].split(',').map(c => c.trim());
+      const sourceNode = nodes.find(n => 
+        (n.data.attributes as any[])?.some(a => cols.includes(a.name))
+      );
+      if (sourceNode) return sourceNode.data.label as string;
+    }
+
+    return null;
+  };
+
+  const highlightTableOnCanvas = (tableName: string) => {
+    if (!rfInstance) return;
+    const targetNode = nodes.find(n => n.data.label === tableName);
+    if (targetNode) {
+      setNodes(nds => nds.map(n => ({
+        ...n,
+        selected: n.id === targetNode.id
+      })));
+      rfInstance.fitView({
+        nodes: [targetNode],
+        duration: 800,
+        padding: 1.5
+      });
+      showToast(`Highlighted table: ${tableName}`, "success");
+    } else {
+      showToast(`Table ${tableName} not found on canvas`, "error");
+    }
+  };
+
+  const executeNormalizationStep = (stepText: string) => {
+    let newNodes = [...nodes];
+    const newEdges = [...edges];
+    
+    // 1. Missing PK
+    const pkMatch = stepText.match(/Injected missing primary key '(\w+)' into '(\w+)'/);
+    if (pkMatch) {
+      const [_, pkName, tableName] = pkMatch;
+      newNodes = newNodes.map(n => {
+        if (n.data.label === tableName) {
+          const attrs = [...(n.data.attributes as any[])];
+          attrs.unshift({ name: pkName, type: 'INTEGER', isPk: true });
+          return { ...n, data: { ...n.data, attributes: attrs } };
+        }
+        return n;
+      });
+    }
+
+    // 2. Repeating group
+    const repeatingMatch = stepText.match(/Extracted repeating group '(\w+)' from '(\w+)' into new entity '(\w+)'/);
+    if (repeatingMatch) {
+      const [_, attrName, tableName, newTableName] = repeatingMatch;
+      newNodes = newNodes.map(n => {
+        if (n.data.label === tableName) {
+          const attrs = ((n.data.attributes as any[]) || []).filter(a => a.name !== attrName);
+          return { ...n, data: { ...n.data, attributes: attrs } };
+        }
+        return n;
+      });
+      const originalNode = nodes.find(n => n.data.label === tableName);
+      const originalPk = (originalNode?.data as any)?.attributes?.find((a: any) => a.isPk)?.name || `${tableName}_id`;
+      const originalPkType = (originalNode?.data as any)?.attributes?.find((a: any) => a.isPk)?.type || 'INTEGER';
+
+      newNodes.push({
+        id: newTableName,
+        type: 'tableMode',
+        position: { x: 200, y: 200 },
+        data: {
+          label: newTableName,
+          icon: 'server',
+          attributes: [
+            { name: `${newTableName}_id`, type: 'INTEGER', isPk: true },
+            { name: originalPk, type: originalPkType, isFk: true },
+            { name: 'value', type: 'VARCHAR(255)' }
+          ]
+        }
+      });
+      
+      newEdges.push({
+        id: `e-${Date.now()}`,
+        source: tableName,
+        target: newTableName,
+        type: edgeStyle || 'crowsFoot',
+        data: {
+          sourceColumn: originalPk,
+          targetColumn: originalPk,
+          relationshipType: 'many-to-one'
+        }
+      });
+    }
+
+    // 3. 2NF Partial Dependency
+    const partialMatch = stepText.match(/moved \[(.*?)\] from '(\w+)' into new table '(\w+)' \(dependent on '(\w+)'\)/);
+    if (partialMatch) {
+      const [_, colListStr, tableName, newTableName, pkColName] = partialMatch;
+      const colsToMove = colListStr.split(',').map(c => c.trim());
+      
+      const originalNode = nodes.find(n => n.data.label === tableName);
+      const pkType = (originalNode?.data as any)?.attributes?.find((a: any) => a.name === pkColName)?.type || 'INTEGER';
+
+      newNodes = newNodes.map(n => {
+        if (n.data.label === tableName) {
+          const attrs = ((n.data.attributes as any[]) || []).filter(a => !colsToMove.includes(a.name));
+          const hasFk = attrs.find(a => a.name === pkColName);
+          if (hasFk) {
+            hasFk.isFk = true;
+          } else {
+            attrs.push({ name: pkColName, type: pkType, isFk: true });
+          }
+          return { ...n, data: { ...n.data, attributes: attrs } };
+        }
+        return n;
+      });
+
+      newNodes.push({
+        id: newTableName,
+        type: 'tableMode',
+        position: { x: 250, y: 250 },
+        data: {
+          label: newTableName,
+          icon: 'server',
+          attributes: [
+            { name: pkColName, type: pkType, isPk: true },
+            ...colsToMove.map(c => {
+              const originalAttr = (originalNode?.data as any)?.attributes?.find((a: any) => a.name === c);
+              return { name: c, type: originalAttr?.type || 'VARCHAR(255)' };
+            })
+          ]
+        }
+      });
+
+      newEdges.push({
+        id: `e-${Date.now()}`,
+        source: newTableName,
+        target: tableName,
+        type: edgeStyle || 'crowsFoot',
+        data: {
+          sourceColumn: pkColName,
+          targetColumn: pkColName,
+          relationshipType: 'many-to-one'
+        }
+      });
+    }
+
+    // 4. 3NF Transitive Dependency
+    const transitiveMatch = stepText.match(/Extracted transitive dependency: '(\w+)' → \[(.*?)\] from '(\w+)' into '(\w+)'/);
+    if (transitiveMatch) {
+      const [_, determinantName, colListStr, tableName, newTableName] = transitiveMatch;
+      const colsToMove = colListStr.split(',').map(c => c.trim());
+      
+      const originalNode = nodes.find(n => n.data.label === tableName);
+      const detType = (originalNode?.data as any)?.attributes?.find((a: any) => a.name === determinantName)?.type || 'VARCHAR(255)';
+
+      newNodes = newNodes.map(n => {
+        if (n.data.label === tableName) {
+          const attrs = ((n.data.attributes as any[]) || []).filter(a => !colsToMove.includes(a.name));
+          const detAttr = attrs.find(a => a.name === determinantName);
+          if (detAttr) detAttr.isFk = true;
+          return { ...n, data: { ...n.data, attributes: attrs } };
+        }
+        return n;
+      });
+
+      newNodes.push({
+        id: newTableName,
+        type: 'tableMode',
+        position: { x: 300, y: 300 },
+        data: {
+          label: newTableName,
+          icon: 'server',
+          attributes: [
+            { name: determinantName, type: detType, isPk: true },
+            ...colsToMove.map(c => {
+              const originalAttr = (originalNode?.data as any)?.attributes?.find((a: any) => a.name === c);
+              return { name: c, type: originalAttr?.type || 'VARCHAR(255)' };
+            })
+          ]
+        }
+      });
+
+      newEdges.push({
+        id: `e-${Date.now()}`,
+        source: newTableName,
+        target: tableName,
+        type: edgeStyle || 'crowsFoot',
+        data: {
+          sourceColumn: determinantName,
+          targetColumn: determinantName,
+          relationshipType: 'many-to-one'
+        }
+      });
+    }
+
+    // 5. 3NF strict
+    const strictMatch = stepText.match(/Extracted prefix cluster '(\w+)_{1,2}\*': moved \[(.*?)\] into '(\w+)'/);
+    if (strictMatch) {
+      const [_, prefix, colListStr, newTableName] = strictMatch;
+      const colsToMove = colListStr.split(',').map(c => c.trim());
+      
+      const sourceNode = nodes.find(n => 
+        ((n.data as any).attributes as any[])?.some(a => colsToMove.includes(a.name))
+      );
+      
+      if (sourceNode) {
+        const tableName = sourceNode.data.label as string;
+        const determinantName = `${prefix}_id`;
+        const detType = 'INTEGER';
+
+        newNodes = newNodes.map(n => {
+          if (n.data.label === tableName) {
+            const attrs = ((n.data.attributes as any[]) || []).filter(a => !colsToMove.includes(a.name));
+            const hasDet = attrs.find(a => a.name === determinantName);
+            if (hasDet) {
+              hasDet.isFk = true;
+            } else {
+              attrs.push({ name: determinantName, type: detType, isFk: true });
+            }
+            return { ...n, data: { ...n.data, attributes: attrs } };
+          }
+          return n;
+        });
+
+        newNodes.push({
+          id: newTableName,
+          type: 'tableMode',
+          position: { x: 320, y: 320 },
+          data: {
+            label: newTableName,
+            icon: 'server',
+            attributes: [
+              { name: determinantName, type: detType, isPk: true },
+              ...colsToMove.map(c => {
+                const originalAttr = (sourceNode?.data as any)?.attributes?.find((a: any) => a.name === c);
+                return { name: c, type: originalAttr?.type || 'VARCHAR(255)' };
+              })
+            ]
+          }
+        });
+
+        newEdges.push({
+          id: `e-${Date.now()}`,
+          source: newTableName,
+          target: tableName,
+          type: edgeStyle || 'crowsFoot',
+          data: {
+            sourceColumn: determinantName,
+            targetColumn: determinantName,
+            relationshipType: 'many-to-one'
+          }
+        });
+      }
+    }
+
+    const layouted = getLayoutedElements(newNodes, newEdges, layoutDirection);
+    setNodes(layouted.nodes);
+    setEdges(layouted.edges);
+    takeSnapshot();
+
+    setTimeout(() => {
+      if (rfInstance) {
+        rfInstance.fitView({ duration: 800, padding: 0.12 });
+      }
+    }, 100);
+
+    setCurrentStepIdx(prev => prev + 1);
+    showToast("Decomposed table and updated canvas schema successfully!", "success");
+  };
+
+
+  // Spotlight Search & Shortcuts Modal
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
+
+  // Schema Diffing State
+  const [pendingDiff, setPendingDiff] = useState<{
+    newNodes: Node[];
+    newEdges: Edge[];
+    oldNodes: Node[];
+    oldEdges: Edge[];
+    diffMap: Record<string, 'added' | 'modified' | 'deleted'>;
+  } | null>(null);
 
   // Sidebar state
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -140,6 +531,125 @@ export function Canvas() {
   }, []);
 
   const layout = useLayout();
+  const layoutRef = useRef(layout);
+  useEffect(() => { layoutRef.current = layout; }, [layout]);
+
+  // Synchronize generated SQL in real-time on local state edits
+  useEffect(() => {
+    if (nodes.length === 0) return;
+    try {
+      const schema = serializeCanvasToSchema(nodes, edges);
+      const sql = generateTables(schema, sqlDialect as any);
+      setGeneratedSql(sql);
+      layoutRef.current.setGeneratedSql(sql);
+    } catch (e) {
+      console.warn("Failed to generate SQL locally:", e);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodes, edges, sqlDialect]);
+
+  // Propagate global details level to all table nodes
+  useEffect(() => {
+    setNodes((nds) =>
+      nds.map((n) => {
+        if (n.type !== "tableMode") return n;
+        if (n.data.globalDetailsLevel === detailsLevel) return n;
+        return { ...n, data: { ...n.data, globalDetailsLevel: detailsLevel } };
+      })
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailsLevel]);
+
+
+
+
+
+
+
+  // --- Global Keyboard Shortcuts (Ctrl+K, ?, Ctrl+S, Ctrl+I) ---
+  useEffect(() => {
+    const handleGlobalShortcuts = (e: KeyboardEvent) => {
+      const isInput =
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        e.target instanceof HTMLSelectElement;
+
+      // Ctrl+K / Cmd+K = Spotlight Search (always, even in inputs)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setIsSearchOpen((prev) => !prev);
+        return;
+      }
+
+      // Skip remaining shortcuts when user is typing in form fields
+      if (isInput) return;
+
+      // ? = Shortcuts Cheat Sheet
+      if (e.key === "?") {
+        e.preventDefault();
+        setIsShortcutsOpen((prev) => !prev);
+      }
+      // Ctrl+S = Copy SQL DDL
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        const sql = layoutRef.current.generatedSql;
+        if (sql) {
+          navigator.clipboard.writeText(sql);
+          showToast("SQL DDL copied to clipboard", "success");
+        } else {
+          showToast("No SQL generated yet", "error");
+        }
+      }
+      // Ctrl+I = Open DDL Import Panel
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "i") {
+        e.preventDefault();
+        layoutRef.current.setSqlActiveTab("import");
+        layoutRef.current.setSqlOpen(true);
+      }
+    };
+
+    window.addEventListener("keydown", handleGlobalShortcuts);
+    return () => window.removeEventListener("keydown", handleGlobalShortcuts);
+  }, []);
+
+  // --- Spotlight Search: Select & Focus Node Handler ---
+  const handleSelectNodeFromSearch = useCallback(
+    (nodeId: string) => {
+      setIsSearchOpen(false);
+      setSelectedNodeId(nodeId);
+      setSelectedEdgeId(null);
+      setSidebarTab("inspector");
+      setShowUnifiedSidebar(true);
+
+      const targetNode = nodes.find((n) => n.id === nodeId);
+      if (targetNode && rfInstance) {
+        const width = targetNode.measured?.width || 240;
+        const height = targetNode.measured?.height || 300;
+        const x = targetNode.position.x + width / 2;
+        const y = targetNode.position.y + height / 2;
+        rfInstance.setCenter(x, y, { zoom: 1.1, duration: 800 });
+
+        // Pulse highlight for 2.5 seconds
+        setNodes((nds) =>
+          nds.map((n) =>
+            n.id === nodeId
+              ? { ...n, data: { ...n.data, spotlightActive: true } }
+              : n
+          )
+        );
+        setTimeout(() => {
+          setNodes((nds) =>
+            nds.map((n) =>
+              n.id === nodeId
+                ? { ...n, data: { ...n.data, spotlightActive: false } }
+                : n
+            )
+          );
+        }, 2500);
+      }
+    },
+    [nodes, rfInstance, setNodes]
+  );
 
   useEffect(() => {
     if (layout.isSqlOpen) {
@@ -414,6 +924,15 @@ export function Canvas() {
     if (hasFetched.current) return;
     
     const prompt = sessionStorage.getItem("designdb_prompt");
+    const directAction = sessionStorage.getItem("designdb_action");
+
+    if (directAction === "import") {
+      sessionStorage.removeItem("designdb_action");
+      // Open SQL Workspace & Import tab directly
+      layoutRef.current.setSqlActiveTab("import");
+      layoutRef.current.setSqlOpen(true);
+    }
+
     if (prompt) {
       sessionStorage.removeItem("designdb_prompt");
       generateSchema(prompt);
@@ -493,17 +1012,62 @@ export function Canvas() {
       // Apply Horizontal DAG Layout Engine
       const layouted = getLayoutedElements(rawNodes, rawEdges, 'LR');
       
-      // If doing a mutation, just flash the entire modified graph instantly for snappy UX
+      // If doing a mutation, compute diff and show review banner instead of overwriting
       if (existingSchema) {
-         setNodes(layouted.nodes);
-         setEdges(layouted.edges);
-         setIsGenerating(false);
-         setGenerationProgress(100);
-         takeSnapshot();
-         if (rfInstance) {
-           setTimeout(() => rfInstance.fitView({ duration: 800, padding: 0.1 }), 200);
-         }
-         return;
+        // Compute diff map: which tables are new, modified, or deleted
+        const oldNodeIds = new Set(nodesRef.current.map(n => n.id));
+        const newNodeIds = new Set(layouted.nodes.map(n => n.id));
+        const diffMap: Record<string, 'added' | 'modified' | 'deleted'> = {};
+
+        // New tables (in new but not in old)
+        layouted.nodes.forEach(n => {
+          if (!oldNodeIds.has(n.id)) {
+            diffMap[n.id] = 'added';
+          } else {
+            // Check if modified (different attributes)
+            const oldNode = nodesRef.current.find(o => o.id === n.id);
+            if (oldNode && JSON.stringify(oldNode.data?.attributes) !== JSON.stringify(n.data?.attributes)) {
+              diffMap[n.id] = 'modified';
+            }
+          }
+        });
+
+        // Deleted tables (in old but not in new)
+        nodesRef.current.forEach(n => {
+          if (!newNodeIds.has(n.id)) {
+            diffMap[n.id] = 'deleted';
+          }
+        });
+
+        // Apply diff status to new nodes for visual styling
+        const nodesWithDiff = layouted.nodes.map(n => ({
+          ...n,
+          data: { ...n.data, diffStatus: diffMap[n.id] || undefined }
+        }));
+
+        // Also add deleted nodes (keep them but mark as deleted)
+        const deletedNodes = nodesRef.current
+          .filter(n => diffMap[n.id] === 'deleted')
+          .map(n => ({ ...n, data: { ...n.data, diffStatus: 'deleted' as const } }));
+
+        const allDiffNodes = [...nodesWithDiff, ...deletedNodes];
+
+        setPendingDiff({
+          newNodes: layouted.nodes,
+          newEdges: layouted.edges,
+          oldNodes: JSON.parse(JSON.stringify(nodesRef.current)),
+          oldEdges: JSON.parse(JSON.stringify(edgesRef.current)),
+          diffMap,
+        });
+
+        setNodes(allDiffNodes);
+        setEdges(layouted.edges);
+        setIsGenerating(false);
+        setGenerationProgress(100);
+        if (rfInstance) {
+          setTimeout(() => rfInstance.fitView({ duration: 800, padding: 0.1 }), 200);
+        }
+        return;
       }
 
       // If initial build, execute Staggered Sync Progress 50% -> 100%
@@ -604,6 +1168,52 @@ export function Canvas() {
     setIsChatFocused(false);
   };
 
+  // --- Schema Diff Approve/Discard Handlers ---
+  const approveDiff = useCallback(() => {
+    if (!pendingDiff) return;
+    // Strip diffStatus from all nodes and commit
+    setNodes(pendingDiff.newNodes.map(n => ({
+      ...n,
+      data: { ...n.data, diffStatus: undefined }
+    })));
+    setEdges(pendingDiff.newEdges);
+    setPendingDiff(null);
+    takeSnapshot();
+    showToast("Schema changes approved ✓", "success");
+  }, [pendingDiff, setNodes, setEdges, takeSnapshot]);
+
+  const discardDiff = useCallback(() => {
+    if (!pendingDiff) return;
+    // Revert to old state
+    setNodes(pendingDiff.oldNodes);
+    setEdges(pendingDiff.oldEdges);
+    setPendingDiff(null);
+    showToast("Changes discarded — reverted to previous schema", "error");
+  }, [pendingDiff, setNodes, setEdges]);
+
+  const miniMapStyle = useMemo(() => {
+    let rightOffset = 24;
+    let bottomOffset = 24;
+
+    if (showUnifiedSidebar) {
+      rightOffset = 388; // 340px sidebar width + 24px gap + 24px spacing
+    }
+    if (showSqlSandbox) {
+      bottomOffset = 408; // 360px sandbox height + 24px gap + 24px spacing
+    }
+
+    return {
+      background: '#0a0e1a',
+      border: '1px solid rgba(255,255,255,0.08)',
+      borderRadius: '12px',
+      position: 'absolute' as const,
+      right: `${rightOffset}px`,
+      bottom: `${bottomOffset}px`,
+      margin: '0',
+      transition: 'all 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
+    };
+  }, [showUnifiedSidebar, showSqlSandbox]);
+
   return (
     <div className="w-full h-full flex flex-col relative text-sm">
       <FloatingHeader
@@ -617,6 +1227,51 @@ export function Canvas() {
         setCurrentProjectId={setCurrentProjectId}
       />
 
+      {/* ── Schema Diff Review Banner ── */}
+      {pendingDiff && (
+        <div className="absolute top-[52px] left-1/2 -translate-x-1/2 z-50 pointer-events-auto animate-in slide-in-from-top-2 duration-300">
+          <div className="flex items-center gap-4 px-5 py-2.5 rounded-2xl bg-[#0A0E1A]/95 border border-white/[0.08] backdrop-blur-xl shadow-[0_12px_40px_rgba(0,0,0,0.7)]">
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+              <span className="text-xs font-semibold text-white/80">Review Changes</span>
+            </div>
+
+            <div className="flex items-center gap-2 text-[10px] font-mono">
+              {Object.values(pendingDiff.diffMap).filter(v => v === 'added').length > 0 && (
+                <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400">
+                  +{Object.values(pendingDiff.diffMap).filter(v => v === 'added').length} new
+                </span>
+              )}
+              {Object.values(pendingDiff.diffMap).filter(v => v === 'modified').length > 0 && (
+                <span className="px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-400">
+                  ~{Object.values(pendingDiff.diffMap).filter(v => v === 'modified').length} modified
+                </span>
+              )}
+              {Object.values(pendingDiff.diffMap).filter(v => v === 'deleted').length > 0 && (
+                <span className="px-2 py-0.5 rounded-full bg-red-500/15 border border-red-500/30 text-red-400">
+                  -{Object.values(pendingDiff.diffMap).filter(v => v === 'deleted').length} removed
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 ml-2">
+              <button
+                onClick={discardDiff}
+                className="px-3 py-1.5 text-[11px] font-semibold rounded-lg bg-white/[0.04] border border-white/[0.08] text-white/60 hover:text-white hover:bg-white/[0.08] transition-all"
+              >
+                Discard
+              </button>
+              <button
+                onClick={approveDiff}
+                className="px-3 py-1.5 text-[11px] font-bold rounded-lg bg-gradient-to-r from-emerald-500 to-emerald-600 text-white shadow-[0_4px_12px_rgba(16,185,129,0.3)] hover:shadow-[0_6px_16px_rgba(16,185,129,0.4)] transition-all"
+              >
+                Approve & Apply
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* SVG Definitions for Crow's Foot Markers */}
       <svg style={{ position: 'absolute', top: 0, left: 0, width: 0, height: 0 }}>
         <defs>
@@ -629,9 +1284,9 @@ export function Canvas() {
         </defs>
       </svg>
       
-      <div className="flex-1 w-full relative overflow-hidden">
-        <HoverProvider>
-          <div className="absolute inset-0 z-0">
+        <div className="flex-1 h-full relative">
+            <HoverProvider>
+              <div className="absolute inset-0 z-0">
             {/* Animated dotted grid background */}
             {showGrid && <div className="animated-dot-grid" />}
             <div className="canvas-vignette" />
@@ -681,7 +1336,7 @@ export function Canvas() {
               <Panel
                 position="bottom-left"
                 className="pointer-events-none !m-0"
-                style={{ left: "24px", bottom: "24px" }}
+                style={{ left: "88px", bottom: "24px" }}
               >
                 <div className="pointer-events-auto bg-[#090C15]/80 backdrop-blur-xl border border-white/[0.08] rounded-xl px-1.5 py-1 shadow-[0_8px_32px_rgba(0,0,0,0.5)]">
                   <CanvasToolbar
@@ -690,27 +1345,43 @@ export function Canvas() {
                     canUndo={canUndo}
                     canRedo={canRedo}
                     rfInstance={rfInstance}
+                    detailsLevel={detailsLevel}
+                    setDetailsLevel={setDetailsLevel}
                   />
                 </div>
               </Panel>
+
+              {/* MiniMap for canvas navigation */}
+              <MiniMap
+                position="bottom-right"
+                style={miniMapStyle}
+                maskColor="rgba(0,0,0,0.6)"
+                nodeColor="#4A90D9"
+                pannable
+                zoomable
+              />
             </ReactFlow>
-          </div>
-        </HoverProvider>
-
-
-
+      </div>
+    </HoverProvider>
+  </div>
         {isReviewsOpen && (
           <div 
-            className="absolute z-40 w-[340px] max-h-[380px] glass-panel rounded-2xl border border-white/[0.08] overflow-hidden flex flex-col shadow-[0_24px_64px_rgba(0,0,0,0.8)] pointer-events-auto"
+            className="absolute z-40 w-[350px] max-h-[450px] glass-panel rounded-2xl border border-white/[0.08] overflow-hidden flex flex-col shadow-[0_24px_64px_rgba(0,0,0,0.8)] pointer-events-auto"
             style={{ left: "80px", top: "80px" }}
           >
-            <div className="bg-[#0C1222]/90 px-5 py-3.5 border-b border-white/[0.06] flex justify-between items-center shrink-0">
+            <div className="bg-[#0C1222]/90 px-5 py-3 border-b border-white/[0.06] flex justify-between items-center shrink-0">
               <div className="flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-[#4A90D9] animate-pulse" />
                 <span className="text-xs font-semibold text-white tracking-wider uppercase font-mono">Architecture Audit</span>
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-[10px] font-mono font-bold tracking-wider px-2 py-0.5 rounded bg-[#4A90D9]/10 border border-[#4A90D9]/20 text-[#4A90D9] uppercase">INTELLIGENCE</span>
+                <button
+                  onClick={runAudit}
+                  disabled={isAuditing}
+                  className="flex items-center gap-1 px-2 py-1 rounded bg-[#4A90D9]/15 border border-[#4A90D9]/30 text-[#4A90D9] text-[10px] font-bold hover:bg-[#4A90D9]/25 transition-all disabled:opacity-40"
+                >
+                  {isAuditing ? <Loader2 size={10} className="animate-spin" /> : "Scan Canvas"}
+                </button>
                 <button 
                   onClick={() => setIsReviewsOpen(false)}
                   className="text-white/65 hover:text-white hover:bg-white/[0.06] rounded-md text-xs p-1 px-1.5 transition-all"
@@ -719,51 +1390,166 @@ export function Canvas() {
                 </button>
               </div>
             </div>
-            <div className="p-5 overflow-y-auto p-scrollbar bg-[#060A13]/60 flex-1 flex flex-col gap-3">
-              <div className="bg-purple-950/10 border border-purple-500/20 rounded-xl p-4 flex gap-3 shadow-[0_4px_16px_rgba(124,58,237,0.05)] shrink-0">
-                <div className="text-purple-400 shrink-0 text-base font-bold animate-pulse">✨</div>
-                <div>
-                  <h4 className="text-[11px] font-bold tracking-wider font-mono text-purple-400 uppercase mb-1">Normalization engine</h4>
-                  <p className="text-xs text-slate-300 leading-relaxed font-sans font-medium">
-                    {!generatedSql 
-                      ? "Awaiting model design execution... Enter requirements above to kick off automatic 3NF schemas." 
-                      : "DesignDB runs deterministic constraint passes on the LLM's raw schema to resolve atomicity, candidate keys, and transitive dependencies."}
-                  </p>
-                </div>
-              </div>
 
-              {aiInsightReport && (
-                <div className="bg-white/[0.02] border border-white/[0.05] rounded-xl p-4 flex-1">
-                  <h4 className="text-[10px] font-bold tracking-wider font-mono text-white/50 uppercase mb-3 pb-2 border-b border-white/[0.05]">Execution Log</h4>
-                  <div className="space-y-2.5">
-                    {aiInsightReport.split('\n').filter(line => line.trim()).map((line, i) => {
-                      if (line.startsWith('# ')) {
-                        return null; // Skip main title
-                      }
-                      if (line.startsWith('## ')) {
-                        return <h5 key={i} className="text-white/80 font-bold text-xs mt-3 mb-1">{line.replace('## ', '')}</h5>;
-                      }
-                      if (line.startsWith('**Status:**')) {
-                        return <div key={i} className="text-[11px] text-lime-green font-mono">{line.replace(/\*\*/g, '')}</div>;
-                      }
-                      if (line.startsWith('**')) {
-                        return <div key={i} className="text-[11px] text-white/60 font-mono">{line.replace(/\*\*/g, '')}</div>;
-                      }
-                      if (line.startsWith('- [')) {
-                        const [, badge, rest] = line.match(/- \[(.*?)\] (.*)/) || [null, '', line.replace('- ', '')];
-                        return (
-                          <div key={i} className="text-xs text-slate-300 flex items-start gap-2 leading-snug bg-white/[0.01] p-2 rounded-lg border border-white/[0.02]">
-                            {badge && <span className="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-bold font-mono bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">{badge}</span>}
-                            <span>{rest}</span>
-                          </div>
-                        );
-                      }
-                      if (line.startsWith('- ')) {
-                        return <div key={i} className="text-xs text-slate-300 flex items-start gap-2 leading-snug"><span className="text-white/20 mt-0.5">•</span><span>{line.replace('- ', '')}</span></div>;
-                      }
-                      return <p key={i} className="text-xs text-slate-400">{line}</p>;
-                    })}
+            {/* Tabs Selector */}
+            <div className="flex border-b border-white/[0.04] bg-[#080d1a]/80 px-2 py-1 shrink-0 gap-1">
+              <button
+                onClick={() => setAuditTab("wizard")}
+                className={`flex-1 text-center py-1 text-[10px] font-bold rounded transition-colors ${
+                  auditTab === "wizard"
+                    ? "bg-white/[0.06] text-white"
+                    : "text-white/40 hover:text-white/60 hover:bg-white/[0.02]"
+                }`}
+              >
+                Interactive Wizard {auditSteps.length > 0 && `(${auditSteps.length - Math.max(0, currentStepIdx)})`}
+              </button>
+              <button
+                onClick={() => setAuditTab("log")}
+                className={`flex-1 text-center py-1 text-[10px] font-bold rounded transition-colors ${
+                  auditTab === "log"
+                    ? "bg-white/[0.06] text-white"
+                    : "text-white/40 hover:text-white/60 hover:bg-white/[0.02]"
+                }`}
+              >
+                Audit Log
+              </button>
+            </div>
+
+            <div className="p-4 overflow-y-auto p-scrollbar bg-[#060A13]/60 flex-1 flex flex-col gap-3">
+              {isAuditing ? (
+                <div className="flex flex-col items-center justify-center py-12 gap-3 text-white/50 text-xs select-none">
+                  <Loader2 size={24} className="animate-spin text-[#4A90D9]" />
+                  <span>Analyzing database schema constraints...</span>
+                </div>
+              ) : auditTab === "wizard" ? (
+                <div className="flex-1 flex flex-col gap-3 min-h-0">
+                  {auditSteps.length === 0 || currentStepIdx >= auditSteps.length ? (
+                    <div className="flex flex-col items-center justify-center py-10 text-center gap-2 select-none">
+                      <div className="text-2xl">✨</div>
+                      <h5 className="text-[11px] font-bold text-white uppercase tracking-wider font-mono">No Active Warnings</h5>
+                      <p className="text-xs text-white/50 px-2 leading-relaxed">
+                        {currentStepIdx >= auditSteps.length && auditSteps.length > 0
+                          ? "Great job! All identified normal form issues have been resolved."
+                          : "Run a \"Scan Canvas\" audit above to check your current visual design for 1NF/2NF/3NF violations."}
+                      </p>
+                      {(auditSteps.length === 0 || currentStepIdx >= auditSteps.length) && (
+                        <button
+                          onClick={runAudit}
+                          className="mt-3 px-3 py-1.5 rounded-lg bg-gradient-to-r from-[#4A90D9] to-[#2d6db5] text-white text-[10px] font-bold shadow-[0_4px_12px_rgba(74,144,217,0.2)] hover:shadow-[0_6px_16px_rgba(74,144,217,0.3)] transition-all"
+                        >
+                          Scan Canvas Now
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="space-y-3 flex-1 flex flex-col min-h-0">
+                      {/* Step Header */}
+                      <div className="flex justify-between items-center bg-white/[0.02] border border-white/[0.04] rounded-lg px-2.5 py-1.5 shrink-0">
+                        <span className="text-[9px] text-[#4A90D9] font-bold font-mono uppercase">
+                          Recommendation {currentStepIdx + 1} of {auditSteps.length}
+                        </span>
+                        <span className="text-[9px] text-white/40 font-mono">
+                          {Math.round(((currentStepIdx) / auditSteps.length) * 100)}% Resolved
+                        </span>
+                      </div>
+
+                      {/* Chat Wizard Card */}
+                      <div className="bg-purple-950/10 border border-purple-500/20 rounded-xl p-4 flex gap-3 shadow-[0_4px_16px_rgba(124,58,237,0.05)] shrink-0">
+                        <div className="text-purple-400 shrink-0 text-base font-bold animate-pulse">✨</div>
+                        <div className="flex-1 min-w-0">
+                          <h4 className="text-[10px] font-bold tracking-wider font-mono text-purple-400 uppercase mb-1">AI Audit Wizard</h4>
+                          <p className="text-[11px] text-slate-300 leading-relaxed font-sans font-medium whitespace-pre-line">
+                            {auditSteps[currentStepIdx]}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Wizard Actions */}
+                      <div className="bg-white/[0.01] border border-white/[0.04] rounded-xl p-3 flex flex-col gap-2 shrink-0">
+                        <span className="text-[9px] text-white/35 font-mono uppercase tracking-wider block border-b border-white/[0.04] pb-1 mb-1">Actions</span>
+                        
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => {
+                              const tbl = getTableFromStep(auditSteps[currentStepIdx]);
+                              if (tbl) highlightTableOnCanvas(tbl);
+                              else showToast("Could not find table context in step log", "error");
+                            }}
+                            className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-[10px] font-bold rounded-lg bg-white/[0.03] border border-white/[0.06] text-white/70 hover:text-white hover:bg-white/[0.06] transition-all"
+                          >
+                            🔍 Highlight Table
+                          </button>
+
+                          <button
+                            onClick={() => executeNormalizationStep(auditSteps[currentStepIdx])}
+                            className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-[10px] font-bold rounded-lg bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-[0_4px_12px_rgba(124,58,237,0.2)] hover:shadow-[0_6px_16px_rgba(124,58,237,0.3)] transition-all"
+                          >
+                            ✨ Apply Fix
+                          </button>
+                        </div>
+
+                        <button
+                          onClick={() => setCurrentStepIdx(prev => prev + 1)}
+                          className="w-full text-center py-1 text-[9px] text-white/30 hover:text-white/50 underline transition-colors"
+                        >
+                          Skip recommendation
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="flex-1 flex flex-col gap-3 min-h-0">
+                  <div className="bg-purple-950/10 border border-purple-500/20 rounded-xl p-4 flex gap-3 shadow-[0_4px_16px_rgba(124,58,237,0.05)] shrink-0">
+                    <div className="text-purple-400 shrink-0 text-base font-bold animate-pulse">✨</div>
+                    <div>
+                      <h4 className="text-[11px] font-bold tracking-wider font-mono text-purple-400 uppercase mb-1">Normalization engine</h4>
+                      <p className="text-xs text-slate-300 leading-relaxed font-sans font-medium">
+                        {!generatedSql 
+                          ? "Awaiting model design execution... Enter requirements above to kick off automatic 3NF schemas." 
+                          : "DesignDB runs deterministic constraint passes on the LLM's raw schema to resolve atomicity, candidate keys, and transitive dependencies."}
+                      </p>
+                    </div>
                   </div>
+
+                  {aiInsightReport ? (
+                    <div className="bg-white/[0.02] border border-white/[0.05] rounded-xl p-4 flex-1">
+                      <h4 className="text-[10px] font-bold tracking-wider font-mono text-white/50 uppercase mb-3 pb-2 border-b border-white/[0.05]">Execution Log</h4>
+                      <div className="space-y-2.5">
+                        {aiInsightReport.split('\n').filter(line => line.trim()).map((line, i) => {
+                          if (line.startsWith('# ')) {
+                            return null; // Skip main title
+                          }
+                          if (line.startsWith('## ')) {
+                            return <h5 key={i} className="text-white/80 font-bold text-xs mt-3 mb-1">{line.replace('## ', '')}</h5>;
+                          }
+                          if (line.startsWith('**Status:**')) {
+                            return <div key={i} className="text-[11px] text-lime-green font-mono">{line.replace(/\*\*/g, '')}</div>;
+                          }
+                          if (line.startsWith('**')) {
+                            return <div key={i} className="text-[11px] text-white/60 font-mono">{line.replace(/\*\*/g, '')}</div>;
+                          }
+                          if (line.startsWith('- [')) {
+                            const [, badge, rest] = line.match(/- \[(.*?)\] (.*)/) || [null, '', line.replace('- ', '')];
+                            return (
+                              <div key={i} className="text-xs text-slate-300 flex items-start gap-2 leading-snug bg-white/[0.01] p-2 rounded-lg border border-white/[0.02]">
+                                {badge && <span className="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-bold font-mono bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">{badge}</span>}
+                                <span>{rest}</span>
+                              </div>
+                            );
+                          }
+                          if (line.startsWith('- ')) {
+                            return <div key={i} className="text-xs text-slate-300 flex items-start gap-2 leading-snug"><span className="text-white/20 mt-0.5">•</span><span>{line.replace('- ', '')}</span></div>;
+                          }
+                          return <p key={i} className="text-xs text-slate-400">{line}</p>;
+                        })}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center py-10 text-center text-white/30 text-xs italic select-none">
+                      No report generated yet. Click &quot;Scan Canvas&quot; above to audit schema.
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1063,8 +1849,21 @@ export function Canvas() {
           onCreateNewProject={onCreateNewProject}
         />
 
+        {/* Spotlight Search Modal */}
+        <SpotlightSearch
+          isOpen={isSearchOpen}
+          onClose={() => setIsSearchOpen(false)}
+          nodes={nodes}
+          onSelectNode={handleSelectNodeFromSearch}
+        />
+
+        {/* Keyboard Shortcuts Cheat Sheet */}
+        <ShortcutsModal
+          isOpen={isShortcutsOpen}
+          onClose={() => setIsShortcutsOpen(false)}
+        />
+
         <ToastContainer />
       </div>
-    </div>
   );
 }

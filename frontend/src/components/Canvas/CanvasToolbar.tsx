@@ -1,8 +1,10 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Undo2, Redo2 } from "lucide-react";
+import { Undo2, Redo2, Eye, KeyRound, PanelTopClose } from "lucide-react";
 import { ReactFlowInstance } from "@xyflow/react";
+
+export type DetailsLevel = "all" | "keys" | "headers";
 
 interface CanvasToolbarProps {
   undo: () => void;
@@ -10,9 +12,11 @@ interface CanvasToolbarProps {
   canUndo: boolean;
   canRedo: boolean;
   rfInstance: ReactFlowInstance | null;
+  detailsLevel: DetailsLevel;
+  setDetailsLevel: (level: DetailsLevel) => void;
 }
 
-export function CanvasToolbar({ undo, redo, canUndo, canRedo, rfInstance }: CanvasToolbarProps) {
+export function CanvasToolbar({ undo, redo, canUndo, canRedo, rfInstance, detailsLevel, setDetailsLevel }: CanvasToolbarProps) {
   const [zoomLevel, setZoomLevel] = useState(100);
   const [showZoomMenu, setShowZoomMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -84,6 +88,12 @@ export function CanvasToolbar({ undo, redo, canUndo, canRedo, rfInstance }: Canv
     { label: "Zoom to Selection", shortcut: "⇧ 2", action: handleZoomToSelection },
   ];
 
+  const detailsOptions: { level: DetailsLevel; icon: React.ReactNode; label: string; title: string }[] = [
+    { level: "all", icon: <Eye size={13} />, label: "All", title: "Show all columns" },
+    { level: "keys", icon: <KeyRound size={13} />, label: "Keys", title: "Show only PK/FK columns" },
+    { level: "headers", icon: <PanelTopClose size={13} />, label: "Headers", title: "Show table headers only" },
+  ];
+
   return (
     <div className="flex items-center gap-1 relative">
       {/* Undo */}
@@ -131,6 +141,28 @@ export function CanvasToolbar({ undo, redo, canUndo, canRedo, rfInstance }: Canv
         {zoomLevel}%
       </button>
 
+      {/* Divider */}
+      <div className="w-px h-4 bg-white/[0.08] mx-0.5" />
+
+      {/* Details Level Segmented Control */}
+      <div className="flex items-center rounded-lg bg-white/[0.03] border border-white/[0.06] p-0.5">
+        {detailsOptions.map((opt) => (
+          <button
+            key={opt.level}
+            onClick={() => setDetailsLevel(opt.level)}
+            className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-semibold transition-all duration-150 ${
+              detailsLevel === opt.level
+                ? "bg-[#4A90D9]/20 text-[#4A90D9] border border-[#4A90D9]/30 shadow-inner"
+                : "text-white/40 hover:text-white/70 hover:bg-white/[0.04] border border-transparent"
+            }`}
+            title={opt.title}
+          >
+            {opt.icon}
+            <span className="hidden sm:inline">{opt.label}</span>
+          </button>
+        ))}
+      </div>
+
       {/* Zoom Menu Popup */}
       {showZoomMenu && (
         <div
@@ -159,3 +191,4 @@ export function CanvasToolbar({ undo, redo, canUndo, canRedo, rfInstance }: Canv
     </div>
   );
 }
+

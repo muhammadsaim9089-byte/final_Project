@@ -51,6 +51,44 @@ export function generateTables(schema: Schema, dialect: 'postgres' | 'mysql' | '
         for (const rel of schema.relationships) {
             sql += `ALTER TABLE ${escapeName(rel.fromEntity, dialect)} ADD CONSTRAINT fk_${rel.fromEntity}_${rel.foreignKey} FOREIGN KEY (${escapeName(rel.foreignKey, dialect)}) REFERENCES ${escapeName(rel.toEntity, dialect)}(${escapeName(rel.referencedKey, dialect)}) ON DELETE ${rel.onDelete} ON UPDATE ${rel.onUpdate};\n`;
         }
+        sql += `\n`;
+    }
+
+    // Generate INDEXES for Foreign Key columns
+    if (schema.relationships.length > 0) {
+        sql += `-- ==========================================\n-- INDEXES\n-- ==========================================\n`;
+        for (const rel of schema.relationships) {
+            const indexName = `idx_${rel.fromEntity}_${rel.foreignKey}`;
+            sql += `CREATE INDEX ${escapeName(indexName, dialect)} ON ${escapeName(rel.fromEntity, dialect)} (${escapeName(rel.foreignKey, dialect)});\n`;
+        }
+        sql += `\n`;
+    }
+
+    // Generate INSERT INTO statements for Seed Data
+    const entitiesWithSeed = sortedEntities.filter(e => (e as any).seedData && (e as any).seedData.length > 0);
+    if (entitiesWithSeed.length > 0) {
+        sql += `-- ==========================================\n-- SEED DATA\n-- ==========================================\n`;
+        for (const entity of entitiesWithSeed) {
+            const tableName = escapeName(entity.name, dialect);
+            const seedRows = (entity as any).seedData as Record<string, any>[];
+            for (const row of seedRows) {
+                const cols = Object.keys(row).filter(c => row[c] !== undefined && row[c] !== '');
+                if (cols.length === 0) continue;
+                
+                const escapedCols = cols.map(c => escapeName(c, dialect)).join(', ');
+                const vals = cols.map(c => {
+                    const val = row[c];
+                    if (val === null || val === undefined) return 'NULL';
+                    if (typeof val === 'number') return String(val);
+                    if (typeof val === 'boolean') return val ? 'TRUE' : 'FALSE';
+                    // Otherwise string / date, escape single quotes
+                    return `'${String(val).replace(/'/g, "''")}'`;
+                }).join(', ');
+                
+                sql += `INSERT INTO ${tableName} (${escapedCols}) VALUES (${vals});\n`;
+            }
+            sql += `\n`;
+        }
     }
 
     return sql;

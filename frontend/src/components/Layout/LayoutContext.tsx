@@ -32,6 +32,8 @@ type LayoutContextType = {
   // Generated SQL cache (last compiled)
   generatedSql: string;
   setGeneratedSql: (s: string) => void;
+  sqlActiveTab: "editor" | "import";
+  setSqlActiveTab: (tab: "editor" | "import") => void;
 };
 
 const LayoutContext = createContext<LayoutContextType | null>(null);
@@ -117,6 +119,8 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
   const triggerToggleRelations = () => { if (toggleRelationsRef.current) toggleRelationsRef.current(); };
   const triggerToggleAiInsights = () => { if (toggleAiRef.current) toggleAiRef.current(); };
 
+  const [sqlActiveTab, setSqlActiveTab] = useState<"editor" | "import">("editor");
+
   return (
     <LayoutContext.Provider
       value={{
@@ -142,6 +146,8 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
         triggerToggleAiInsights,
         generatedSql,
         setGeneratedSql,
+        sqlActiveTab,
+        setSqlActiveTab,
       }}
     >
       {children}

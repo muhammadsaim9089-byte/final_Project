@@ -67,7 +67,7 @@ export function UnifiedSidebar({
   
   // --- ADD TAB STATES ---
   const [tableName, setTableName] = useState("");
-  const [templateType, setTemplateType] = useState<"blank" | "users" | "products" | "view">("blank");
+  const [templateType, setTemplateType] = useState<string>("blank");
   const [customColumns, setCustomColumns] = useState<NodeAttribute[]>([
     { name: "id", type: "serial", isPk: true, isFk: false }
   ]);
@@ -80,6 +80,75 @@ export function UnifiedSidebar({
   const [editValue, setEditValue] = useState("");
   const [editingNodeName, setEditingNodeName] = useState(false);
   const [newNodeName, setNewNodeName] = useState("");
+  
+  // Relationship Suggestions State
+  const [relationshipSuggestion, setRelationshipSuggestion] = useState<{
+    sourceNodeId: string;
+    targetNodeId: string;
+    columnName: string;
+  } | null>(null);
+
+  // Helper to find target table based on column naming conventions (e.g. user_id -> users)
+  const findTargetNodeForColumn = (colName: string, currentNodeId: string) => {
+    const match = colName.match(/^(.+?)(?:_id|Id|id)$/);
+    if (!match) return null;
+    const prefix = match[1].toLowerCase();
+    
+    // Pluralization / singularization simplistic checks
+    const candidates = [
+      prefix,
+      prefix + 's',
+      prefix + 'es',
+      prefix.replace(/y$/, 'ies'),
+      prefix.slice(0, -1) // e.g. users -> user
+    ];
+    
+    const found = nodes.find(n => {
+      if (n.id === currentNodeId) return false;
+      const label = (n.data.label as string).toLowerCase();
+      return candidates.includes(label);
+    });
+    
+    return found ? found.id : null;
+  };
+
+  const acceptRelationshipSuggestion = () => {
+    if (!relationshipSuggestion) return;
+    const { sourceNodeId, targetNodeId, columnName } = relationshipSuggestion;
+    
+    // Create connection
+    // Mark source column as FK
+    setNodes((nds: Node[]) => nds.map(n => {
+      if (n.id !== sourceNodeId) return n;
+      const attrs = [...((n.data.attributes as NodeAttribute[]) || [])];
+      const updatedAttrs = attrs.map(attr => {
+        if (attr.name === columnName) {
+          return { ...attr, isFk: true };
+        }
+        return attr;
+      });
+      return { ...n, data: { ...n.data, attributes: updatedAttrs } };
+    }));
+
+    // Create edge
+    const newEdge: Edge = {
+      id: `edge_${sourceNodeId}_to_${targetNodeId}`,
+      source: sourceNodeId,
+      target: targetNodeId,
+      sourceHandle: `${sourceNodeId}-${columnName}`,
+      targetHandle: `${targetNodeId}-id`, // Assume target PK is 'id'
+      type: "custom",
+      data: {
+        relationshipType: "many-to-one",
+        sourceField: columnName,
+        targetField: "id"
+      }
+    };
+    
+    setEdges((eds: Edge[]) => [...eds, newEdge]);
+    setRelationshipSuggestion(null);
+    takeSnapshot();
+  };
 
   // --- SQL CODE IMPORT STATE ---
   const [copiedSql, setCopiedSql] = useState(false);
@@ -121,8 +190,9 @@ export function UnifiedSidebar({
 
   const addNode = (label: string, attrs: NodeAttribute[]) => {
     const offset = nodes.length * 60;
+    const nodeId = crypto.randomUUID ? crypto.randomUUID() : `table_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     const newNode: Node = {
-      id: label,
+      id: nodeId,
       type: "tableMode",
       position: { x: 200 + offset, y: 150 + offset },
       data: { label, icon: "server", attributes: attrs },
@@ -152,7 +222,228 @@ export function UnifiedSidebar({
     setCustomColumns(customColumns.filter((_, i) => i !== idx));
   };
 
+  const spawnMultiTablePreset = (presetName: string) => {
+    const newNodes: Node[] = [];
+    const newEdges: Edge[] = [];
+    const baseOffset = nodes.length * 60;
+    
+    const createTableObj = (label: string, attrs: NodeAttribute[], xOffset: number, yOffset: number) => {
+      const id = crypto.randomUUID ? crypto.randomUUID() : `table_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      return {
+        id,
+        type: "tableMode",
+        position: { x: 250 + xOffset + baseOffset, y: 150 + yOffset + baseOffset },
+        data: { label: uniqueName(label), icon: "server", attributes: attrs }
+      };
+    };
+
+    if (presetName === "auth") {
+      const users = createTableObj("users", [
+        { name: "id", type: "serial", isPk: true, isFk: false },
+        { name: "username", type: "varchar(255)", isPk: false, isFk: false },
+        { name: "email", type: "varchar(255)", isPk: false, isFk: false },
+        { name: "password_hash", type: "varchar(255)", isPk: false, isFk: false },
+        { name: "created_at", type: "timestamp", isPk: false, isFk: false }
+      ], 0, 0);
+
+      const roles = createTableObj("roles", [
+        { name: "id", type: "serial", isPk: true, isFk: false },
+        { name: "name", type: "varchar(100)", isPk: false, isFk: false },
+        { name: "description", type: "text", isPk: false, isFk: false }
+      ], 300, 0);
+
+      const permissions = createTableObj("permissions", [
+        { name: "id", type: "serial", isPk: true, isFk: false },
+        { name: "name", type: "varchar(100)", isPk: false, isFk: false },
+        { name: "description", type: "text", isPk: false, isFk: false }
+      ], 300, 300);
+
+      const userRoles = createTableObj("user_roles", [
+        { name: "user_id", type: "integer", isPk: true, isFk: true },
+        { name: "role_id", type: "integer", isPk: true, isFk: true }
+      ], 150, 150);
+
+      const rolePermissions = createTableObj("role_permissions", [
+        { name: "role_id", type: "integer", isPk: true, isFk: true },
+        { name: "permission_id", type: "integer", isPk: true, isFk: true }
+      ], 450, 150);
+
+      newNodes.push(users, roles, permissions, userRoles, rolePermissions);
+
+      newEdges.push(
+        { id: `edge_${userRoles.id}_to_${users.id}`, source: userRoles.id, target: users.id, sourceHandle: `${userRoles.id}-user_id`, targetHandle: `${users.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "user_id", targetField: "id" } },
+        { id: `edge_${userRoles.id}_to_${roles.id}`, source: userRoles.id, target: roles.id, sourceHandle: `${userRoles.id}-role_id`, targetHandle: `${roles.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "role_id", targetField: "id" } },
+        { id: `edge_${rolePermissions.id}_to_${roles.id}`, source: rolePermissions.id, target: roles.id, sourceHandle: `${rolePermissions.id}-role_id`, targetHandle: `${roles.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "role_id", targetField: "id" } },
+        { id: `edge_${rolePermissions.id}_to_${permissions.id}`, source: rolePermissions.id, target: permissions.id, sourceHandle: `${rolePermissions.id}-permission_id`, targetHandle: `${permissions.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "permission_id", targetField: "id" } }
+      );
+    } else if (presetName === "ecommerce") {
+      const users = createTableObj("users", [
+        { name: "id", type: "serial", isPk: true, isFk: false },
+        { name: "email", type: "varchar(255)", isPk: false, isFk: false },
+        { name: "name", type: "varchar(255)", isPk: false, isFk: false }
+      ], 0, 0);
+
+      const products = createTableObj("products", [
+        { name: "id", type: "serial", isPk: true, isFk: false },
+        { name: "name", type: "varchar(255)", isPk: false, isFk: false },
+        { name: "price", type: "decimal(10,2)", isPk: false, isFk: false },
+        { name: "stock", type: "integer", isPk: false, isFk: false }
+      ], 600, 0);
+
+      const orders = createTableObj("orders", [
+        { name: "id", type: "serial", isPk: true, isFk: false },
+        { name: "user_id", type: "integer", isPk: false, isFk: true },
+        { name: "status", type: "varchar(50)", isPk: false, isFk: false },
+        { name: "created_at", type: "timestamp", isPk: false, isFk: false }
+      ], 200, 200);
+
+      const orderItems = createTableObj("order_items", [
+        { name: "id", type: "serial", isPk: true, isFk: false },
+        { name: "order_id", type: "integer", isPk: false, isFk: true },
+        { name: "product_id", type: "integer", isPk: false, isFk: true },
+        { name: "quantity", type: "integer", isPk: false, isFk: false },
+        { name: "price", type: "decimal(10,2)", isPk: false, isFk: false }
+      ], 450, 200);
+
+      newNodes.push(users, products, orders, orderItems);
+
+      newEdges.push(
+        { id: `edge_${orders.id}_to_${users.id}`, source: orders.id, target: users.id, sourceHandle: `${orders.id}-user_id`, targetHandle: `${users.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "user_id", targetField: "id" } },
+        { id: `edge_${orderItems.id}_to_${orders.id}`, source: orderItems.id, target: orders.id, sourceHandle: `${orderItems.id}-order_id`, targetHandle: `${orders.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "order_id", targetField: "id" } },
+        { id: `edge_${orderItems.id}_to_${products.id}`, source: orderItems.id, target: products.id, sourceHandle: `${orderItems.id}-product_id`, targetHandle: `${products.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "product_id", targetField: "id" } }
+      );
+    } else if (presetName === "cms") {
+      const users = createTableObj("users", [
+        { name: "id", type: "serial", isPk: true, isFk: false },
+        { name: "username", type: "varchar(100)", isPk: false, isFk: false },
+        { name: "role", type: "varchar(50)", isPk: false, isFk: false }
+      ], 0, 0);
+
+      const posts = createTableObj("posts", [
+        { name: "id", type: "serial", isPk: true, isFk: false },
+        { name: "author_id", type: "integer", isPk: false, isFk: true },
+        { name: "title", type: "varchar(255)", isPk: false, isFk: false },
+        { name: "content", type: "text", isPk: false, isFk: false },
+        { name: "status", type: "varchar(50)", isPk: false, isFk: false }
+      ], 250, 0);
+
+      const comments = createTableObj("comments", [
+        { name: "id", type: "serial", isPk: true, isFk: false },
+        { name: "post_id", type: "integer", isPk: false, isFk: true },
+        { name: "user_id", type: "integer", isPk: false, isFk: true },
+        { name: "comment", type: "text", isPk: false, isFk: false }
+      ], 125, 250);
+
+      const tags = createTableObj("tags", [
+        { name: "id", type: "serial", isPk: true, isFk: false },
+        { name: "name", type: "varchar(100)", isPk: false, isFk: false }
+      ], 550, 0);
+
+      const postTags = createTableObj("post_tags", [
+        { name: "post_id", type: "integer", isPk: true, isFk: true },
+        { name: "tag_id", type: "integer", isPk: true, isFk: true }
+      ], 400, 200);
+
+      newNodes.push(users, posts, comments, tags, postTags);
+
+      newEdges.push(
+        { id: `edge_${posts.id}_to_${users.id}`, source: posts.id, target: users.id, sourceHandle: `${posts.id}-author_id`, targetHandle: `${users.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "author_id", targetField: "id" } },
+        { id: `edge_${comments.id}_to_${posts.id}`, source: comments.id, target: posts.id, sourceHandle: `${comments.id}-post_id`, targetHandle: `${posts.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "post_id", targetField: "id" } },
+        { id: `edge_${comments.id}_to_${users.id}`, source: comments.id, target: users.id, sourceHandle: `${comments.id}-user_id`, targetHandle: `${users.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "user_id", targetField: "id" } },
+        { id: `edge_${postTags.id}_to_${posts.id}`, source: postTags.id, target: posts.id, sourceHandle: `${postTags.id}-post_id`, targetHandle: `${posts.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "post_id", targetField: "id" } },
+        { id: `edge_${postTags.id}_to_${tags.id}`, source: postTags.id, target: tags.id, sourceHandle: `${postTags.id}-tag_id`, targetHandle: `${tags.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "tag_id", targetField: "id" } }
+      );
+    } else if (presetName === "inventory") {
+      const warehouses = createTableObj("warehouses", [
+        { name: "id", type: "serial", isPk: true, isFk: false },
+        { name: "name", type: "varchar(255)", isPk: false, isFk: false },
+        { name: "location", type: "varchar(255)", isPk: false, isFk: false }
+      ], 0, 0);
+
+      const products = createTableObj("products", [
+        { name: "id", type: "serial", isPk: true, isFk: false },
+        { name: "sku", type: "varchar(100)", isPk: false, isFk: false },
+        { name: "description", type: "text", isPk: false, isFk: false }
+      ], 450, 0);
+
+      const inventoryLevels = createTableObj("inventory_levels", [
+        { name: "warehouse_id", type: "integer", isPk: true, isFk: true },
+        { name: "product_id", type: "integer", isPk: true, isFk: true },
+        { name: "quantity", type: "integer", isPk: false, isFk: false }
+      ], 225, 200);
+
+      const stockMovements = createTableObj("stock_movements", [
+        { name: "id", type: "serial", isPk: true, isFk: false },
+        { name: "product_id", type: "integer", isPk: false, isFk: true },
+        { name: "from_warehouse_id", type: "integer", isPk: false, isFk: true },
+        { name: "to_warehouse_id", type: "integer", isPk: false, isFk: true },
+        { name: "quantity", type: "integer", isPk: false, isFk: false },
+        { name: "moved_at", type: "timestamp", isPk: false, isFk: false }
+      ], 225, 400);
+
+      newNodes.push(warehouses, products, inventoryLevels, stockMovements);
+
+      newEdges.push(
+        { id: `edge_${inventoryLevels.id}_to_${warehouses.id}`, source: inventoryLevels.id, target: warehouses.id, sourceHandle: `${inventoryLevels.id}-warehouse_id`, targetHandle: `${warehouses.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "warehouse_id", targetField: "id" } },
+        { id: `edge_${inventoryLevels.id}_to_${products.id}`, source: inventoryLevels.id, target: products.id, sourceHandle: `${inventoryLevels.id}-product_id`, targetHandle: `${products.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "product_id", targetField: "id" } },
+        { id: `edge_${stockMovements.id}_to_${products.id}`, source: stockMovements.id, target: products.id, sourceHandle: `${stockMovements.id}-product_id`, targetHandle: `${products.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "product_id", targetField: "id" } },
+        { id: `edge_${stockMovements.id}_to_from_${warehouses.id}`, source: stockMovements.id, target: warehouses.id, sourceHandle: `${stockMovements.id}-from_warehouse_id`, targetHandle: `${warehouses.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "from_warehouse_id", targetField: "id" } },
+        { id: `edge_${stockMovements.id}_to_to_${warehouses.id}`, source: stockMovements.id, target: warehouses.id, sourceHandle: `${stockMovements.id}-to_warehouse_id`, targetHandle: `${warehouses.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "to_warehouse_id", targetField: "id" } }
+      );
+    } else if (presetName === "social") {
+      const users = createTableObj("users", [
+        { name: "id", type: "serial", isPk: true, isFk: false },
+        { name: "username", type: "varchar(100)", isPk: false, isFk: false }
+      ], 0, 0);
+
+      const profiles = createTableObj("profiles", [
+        { name: "user_id", type: "integer", isPk: true, isFk: true },
+        { name: "bio", type: "text", isPk: false, isFk: false },
+        { name: "avatar_url", type: "varchar(255)", isPk: false, isFk: false }
+      ], 0, 250);
+
+      const follows = createTableObj("follows", [
+        { name: "follower_id", type: "integer", isPk: true, isFk: true },
+        { name: "following_id", type: "integer", isPk: true, isFk: true }
+      ], 250, 250);
+
+      const posts = createTableObj("posts", [
+        { name: "id", type: "serial", isPk: true, isFk: false },
+        { name: "user_id", type: "integer", isPk: false, isFk: true },
+        { name: "body", type: "text", isPk: false, isFk: false }
+      ], 300, 0);
+
+      const likes = createTableObj("likes", [
+        { name: "user_id", type: "integer", isPk: true, isFk: true },
+        { name: "post_id", type: "integer", isPk: true, isFk: true }
+      ], 450, 150);
+
+      newNodes.push(users, profiles, follows, posts, likes);
+
+      newEdges.push(
+        { id: `edge_${profiles.id}_to_${users.id}`, source: profiles.id, target: users.id, sourceHandle: `${profiles.id}-user_id`, targetHandle: `${users.id}-id`, type: "custom", data: { relationshipType: "one-to-one", sourceField: "user_id", targetField: "id" } },
+        { id: `edge_${follows.id}_to_follower_${users.id}`, source: follows.id, target: users.id, sourceHandle: `${follows.id}-follower_id`, targetHandle: `${users.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "follower_id", targetField: "id" } },
+        { id: `edge_${follows.id}_to_following_${users.id}`, source: follows.id, target: users.id, sourceHandle: `${follows.id}-following_id`, targetHandle: `${users.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "following_id", targetField: "id" } },
+        { id: `edge_${posts.id}_to_${users.id}`, source: posts.id, target: users.id, sourceHandle: `${posts.id}-user_id`, targetHandle: `${users.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "user_id", targetField: "id" } },
+        { id: `edge_${likes.id}_to_user_${users.id}`, source: likes.id, target: users.id, sourceHandle: `${likes.id}-user_id`, targetHandle: `${users.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "user_id", targetField: "id" } },
+        { id: `edge_${likes.id}_to_post_${posts.id}`, source: likes.id, target: posts.id, sourceHandle: `${likes.id}-post_id`, targetHandle: `${posts.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "post_id", targetField: "id" } }
+      );
+    }
+
+    setNodes((nds: Node[]) => [...nds, ...newNodes]);
+    setEdges((eds: Edge[]) => [...eds, ...newEdges]);
+    if (autoLayout) setTimeout(onAutoLayout, 100);
+    takeSnapshot();
+  };
+
   const handleCreateTable = () => {
+    const isMultiTable = ["auth", "ecommerce", "cms", "inventory", "social"].includes(templateType);
+    if (isMultiTable) {
+      spawnMultiTablePreset(templateType);
+      setTableName("");
+      return;
+    }
+
     let name = uniqueName(tableName.trim() || "new_table");
     let attrs: NodeAttribute[] = [];
 
@@ -208,6 +499,25 @@ export function UnifiedSidebar({
       attrs[idx] = { ...attrs[idx], [field]: value };
       return { ...n, data: { ...n.data, attributes: attrs } };
     }));
+
+    // Trigger relationship suggestion if column name is renamed to end in _id
+    if (field === "name" && typeof value === "string") {
+      const targetId = findTargetNodeForColumn(value, selectedNodeId);
+      if (targetId) {
+        // Check if edge already exists
+        const edgeExists = edges.some(e => 
+          (e.source === selectedNodeId && e.target === targetId) ||
+          (e.source === targetId && e.target === selectedNodeId)
+        );
+        if (!edgeExists) {
+          setRelationshipSuggestion({
+            sourceNodeId: selectedNodeId,
+            targetNodeId: targetId,
+            columnName: value
+          });
+        }
+      }
+    }
     takeSnapshot();
   };
 
@@ -237,14 +547,8 @@ export function UnifiedSidebar({
   const renameNode = () => {
     if (!selectedNodeId || !newNodeName.trim()) return;
     setNodes((nds: Node[]) => nds.map(n =>
-      n.id === selectedNodeId ? { ...n, id: newNodeName, data: { ...n.data, label: newNodeName } } : n
+      n.id === selectedNodeId ? { ...n, data: { ...n.data, label: newNodeName } } : n
     ));
-    setEdges((eds: Edge[]) => eds.map(e => ({
-      ...e,
-      source: e.source === selectedNodeId ? newNodeName : e.source,
-      target: e.target === selectedNodeId ? newNodeName : e.target,
-    })));
-    setSelectedNodeId(newNodeName);
     setEditingNodeName(false);
     takeSnapshot();
   };
@@ -309,34 +613,48 @@ export function UnifiedSidebar({
         return;
       }
 
-      // Convert parsed schema to React Flow nodes and edges
-      const newNodes: Node[] = parsed.entities.map((entity, index) => ({
-        id: entity.name,
-        type: "tableMode",
-        position: { x: 100 + index * 80, y: 100 + index * 60 },
-        data: {
-          label: entity.name,
-          icon: "server",
-          attributes: entity.attributes.map(attr => ({
-            name: attr.name,
-            type: attr.dataType,
-            isPk: attr.isPrimaryKey,
-            isFk: attr.isForeignKey
-          }))
-        }
-      }));
+      // 1. Generate table name to UUID map
+      const tableIdMap = new Map<string, string>();
+      parsed.entities.forEach((entity: any) => {
+        const id = crypto.randomUUID ? crypto.randomUUID() : `table_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+        tableIdMap.set(entity.name.toLowerCase(), id);
+      });
 
-      const newEdges: Edge[] = parsed.relationships.map((rel, index) => ({
-        id: `e-${Date.now()}-${index}`,
-        source: rel.toEntity,
-        target: rel.fromEntity,
-        type: "crowsFoot",
-        data: {
-          relationshipType: rel.type,
-          sourceColumn: "id",
-          targetColumn: rel.foreignKey
-        }
-      }));
+      // Convert parsed schema to React Flow nodes and edges
+      const newNodes: Node[] = parsed.entities.map((entity, index) => {
+        const nodeId = tableIdMap.get(entity.name.toLowerCase())!;
+        return {
+          id: nodeId,
+          type: "tableMode",
+          position: { x: 100 + index * 80, y: 100 + index * 60 },
+          data: {
+            label: entity.name,
+            icon: "server",
+            attributes: entity.attributes.map(attr => ({
+              name: attr.name,
+              type: attr.dataType,
+              isPk: attr.isPrimaryKey,
+              isFk: attr.isForeignKey
+            }))
+          }
+        };
+      });
+
+      const newEdges: Edge[] = parsed.relationships.map((rel, index) => {
+        const sourceId = tableIdMap.get(rel.toEntity.toLowerCase());
+        const targetId = tableIdMap.get(rel.fromEntity.toLowerCase());
+        return {
+          id: `e-${Date.now()}-${index}`,
+          source: sourceId || rel.toEntity,
+          target: targetId || rel.fromEntity,
+          type: "crowsFoot",
+          data: {
+            relationshipType: rel.type,
+            sourceColumn: rel.referencedKey || "id",
+            targetColumn: rel.foreignKey
+          }
+        };
+      });
 
       setNodes(newNodes);
       setEdges(newEdges);
@@ -423,12 +741,17 @@ export function UnifiedSidebar({
               <div className="relative">
                 <select 
                   value={templateType} 
-                  onChange={e => setTemplateType(e.target.value as any)}
+                  onChange={e => setTemplateType(e.target.value)}
                   className="w-full bg-[#080E18] border border-white/[0.08] rounded-lg px-3 py-2.5 text-xs text-white outline-none appearance-none cursor-pointer focus:border-[#4A90D9]/50 transition-all"
                 >
                   <option value="blank">Custom Columns Table</option>
-                  <option value="users">Users Preset</option>
-                  <option value="products">Products Preset</option>
+                  <option value="users">Users Preset (Single Table)</option>
+                  <option value="products">Products Preset (Single Table)</option>
+                  <option value="auth">Auth & RBAC Preset (5 Connected Tables)</option>
+                  <option value="ecommerce">E-commerce Preset (4 Connected Tables)</option>
+                  <option value="cms">Blog & CMS Preset (5 Connected Tables)</option>
+                  <option value="inventory">Inventory Preset (4 Connected Tables)</option>
+                  <option value="social">Social Media Preset (5 Connected Tables)</option>
                   <option value="view">SQL View (Computed)</option>
                 </select>
                 <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-white/30 text-xs">▼</div>
@@ -538,6 +861,58 @@ export function UnifiedSidebar({
             >
               <PlusSquare size={13} />
               {templateType === "view" ? "Create Computed View" : "Spawn Custom Table"}
+            </button>
+
+            <div className="h-px bg-white/[0.06] my-4" />
+
+            <div className="flex justify-between items-center border-b border-white/[0.05] pb-2">
+              <span className="text-[11px] font-sans font-semibold tracking-wider text-white/65 uppercase [font-variant:all-small-caps]">Add Annotations</span>
+              <span className="text-[9px] text-[#4A90D9] bg-[#4A90D9]/10 border border-[#4A90D9]/20 px-1.5 py-0.5 rounded font-mono font-bold uppercase">Note</span>
+            </div>
+
+            <button 
+              onClick={() => {
+                const offset = nodes.length * 60;
+                const nodeId = crypto.randomUUID ? crypto.randomUUID() : `note_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+                const newNote: Node = {
+                  id: nodeId,
+                  type: "stickyNote",
+                  position: { x: 200 + offset, y: 150 + offset },
+                  data: { text: "Double-click to edit...", colorIndex: 0 },
+                };
+                setNodes((nds: any) => [...nds, newNote]);
+                takeSnapshot();
+              }} 
+              className="w-full py-2.5 bg-amber-500/10 border border-amber-500/25 hover:bg-amber-500/20 text-amber-300 text-[11px] font-bold rounded-lg transition-all flex items-center justify-center gap-1.5"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M15.5 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-8.5L15.5 3z" />
+                <path d="M15 3v6h6" />
+              </svg>
+              Add Sticky Note
+            </button>
+
+            <button 
+              onClick={() => {
+                const offset = nodes.length * 60;
+                const nodeId = crypto.randomUUID ? crypto.randomUUID() : `group_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+                const newGroup: Node = {
+                  id: nodeId,
+                  type: "tableGroup",
+                  position: { x: 150 + offset, y: 100 + offset },
+                  style: { width: 450, height: 350 },
+                  data: { label: "New Module Group", colorIndex: 0 },
+                };
+                setNodes((nds: any) => [...nds, newGroup]);
+                takeSnapshot();
+              }} 
+              className="w-full mt-2 py-2.5 bg-blue-500/10 border border-blue-500/25 hover:bg-blue-500/20 text-blue-300 text-[11px] font-bold rounded-lg transition-all flex items-center justify-center gap-1.5"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                <line x1="9" y1="3" x2="9" y2="21" strokeDasharray="3 3" />
+              </svg>
+              Add Table Group
             </button>
           </div>
         )}
@@ -649,6 +1024,232 @@ export function UnifiedSidebar({
                       ))
                     )}
                   </div>
+                </div>
+
+                {/* Relationship Suggestion */}
+                {relationshipSuggestion && (
+                  <div className="bg-indigo-500/10 border border-indigo-500/30 rounded-xl p-3 text-xs space-y-2 animate-in slide-in-from-top-2 duration-200">
+                    <div className="text-white/80 leading-relaxed">
+                      Detected column <span className="font-mono text-yellow-400 font-bold">{relationshipSuggestion.columnName}</span>. Connect to <span className="font-mono text-blue-400 font-bold">{nodes.find(n => n.id === relationshipSuggestion.targetNodeId)?.data.label as string}</span> table?
+                    </div>
+                    <div className="flex gap-2">
+                      <button 
+                        onClick={acceptRelationshipSuggestion}
+                        className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[10px] font-bold transition-all shadow-[0_2px_8px_rgba(79,70,229,0.3)]"
+                      >
+                        Accept Suggestion
+                      </button>
+                      <button 
+                        onClick={() => setRelationshipSuggestion(null)}
+                        className="px-2.5 py-1 bg-white/5 hover:bg-white/10 text-white/70 rounded text-[10px] transition-all"
+                      >
+                        Ignore
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* === Table Color & Domain Group === */}
+                <div className="space-y-3 border-t border-white/[0.05] pt-3">
+                  <span className="text-[10px] font-sans font-semibold tracking-wider text-white/65 uppercase [font-variant:all-small-caps]">Color & Domain Group</span>
+
+                  {/* Color Palette */}
+                  <div className="flex items-center gap-2">
+                    {[
+                      { name: "Lavender",  hex: "#B8A9E8" },
+                      { name: "Emerald",   hex: "#6EE7B7" },
+                      { name: "Coral",     hex: "#FCA5A5" },
+                      { name: "Amber",     hex: "#FCD34D" },
+                      { name: "Sky Blue",  hex: "#7DD3FC" },
+                    ].map((c) => {
+                      const currentColor = (selectedNode.data.color as string) || "";
+                      const isSelected = currentColor === c.hex;
+                      return (
+                        <button
+                          key={c.hex}
+                          title={c.name}
+                          onClick={() => {
+                            setNodes((nds: Node[]) =>
+                              nds.map((n) =>
+                                n.id === selectedNodeId
+                                  ? { ...n, data: { ...n.data, color: isSelected ? "" : c.hex } }
+                                  : n
+                              )
+                            );
+                            takeSnapshot();
+                          }}
+                          className={`w-6 h-6 rounded-full border-2 transition-all duration-200 ${
+                            isSelected
+                              ? "border-white scale-110 shadow-[0_0_10px_rgba(255,255,255,0.3)]"
+                              : "border-white/10 hover:border-white/40 hover:scale-105"
+                          }`}
+                          style={{ backgroundColor: c.hex }}
+                        />
+                      );
+                    })}
+
+                    {/* Custom Color Picker */}
+                    <div className="relative w-6 h-6 rounded-full border border-dashed border-white/20 hover:border-white/40 hover:scale-105 flex items-center justify-center cursor-pointer overflow-hidden transition-all duration-200">
+                      <input
+                        type="color"
+                        value={(selectedNode.data.color as string) || "#6a5fc1"}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setNodes((nds: Node[]) =>
+                            nds.map((n) =>
+                              n.id === selectedNodeId
+                                ? { ...n, data: { ...n.data, color: val } }
+                                : n
+                            )
+                          );
+                        }}
+                        onBlur={() => takeSnapshot()}
+                        className="absolute inset-0 opacity-0 cursor-pointer scale-150"
+                        title="Choose custom color"
+                      />
+                      <span className="text-[10px] text-white/40 pointer-events-none">+</span>
+                    </div>
+
+                    {/* Clear color button */}
+                    {(selectedNode.data.color as string) && (
+                      <button
+                        title="Clear color"
+                        onClick={() => {
+                          setNodes((nds: Node[]) =>
+                            nds.map((n) =>
+                              n.id === selectedNodeId
+                                ? { ...n, data: { ...n.data, color: "" } }
+                                : n
+                            )
+                          );
+                          takeSnapshot();
+                        }}
+                        className="w-6 h-6 rounded-full border border-dashed border-white/20 flex items-center justify-center text-white/30 hover:text-white/60 hover:border-white/40 transition-all text-[10px]"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Group Label Input */}
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      placeholder="e.g. Auth Module, Billing..."
+                      value={(selectedNode.data.group as string) || ""}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setNodes((nds: Node[]) =>
+                          nds.map((n) =>
+                            n.id === selectedNodeId
+                              ? { ...n, data: { ...n.data, group: val } }
+                              : n
+                          )
+                        );
+                      }}
+                      onBlur={() => takeSnapshot()}
+                      className="flex-1 bg-white/[0.03] border border-white/[0.06] rounded-lg px-2.5 py-1.5 text-[11px] text-white/80 placeholder-white/25 outline-none focus:border-[#4A90D9]/40 transition-colors font-sans"
+                    />
+                  </div>
+                </div>
+
+                {/* Seed Data Section */}
+                <div className="space-y-3 border-t border-white/[0.05] pt-3">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] font-sans font-semibold tracking-wider text-white/65 uppercase [font-variant:all-small-caps]">Seed Data Configuration</span>
+                    <button
+                      onClick={() => {
+                        const newRow = selectedAttrs.reduce((acc, attr) => {
+                          acc[attr.name] = attr.type.includes("int") || attr.type.includes("serial") ? 1 : "";
+                          return acc;
+                        }, {} as any);
+                        
+                        const currentSeed = (selectedNode.data.seedData as any[]) || [];
+                        const updatedSeed = [...currentSeed, newRow];
+                        setNodes((nds: Node[]) => nds.map(n => {
+                          if (n.id === selectedNodeId) {
+                            return { ...n, data: { ...n.data, seedData: updatedSeed } };
+                          }
+                          return n;
+                        }));
+                        takeSnapshot();
+                      }}
+                      className="text-[9px] text-[#4A90D9] font-bold bg-[#4A90D9]/5 hover:bg-[#4A90D9]/10 px-2 py-0.5 rounded transition-all"
+                    >
+                      + Add Row
+                    </button>
+                  </div>
+
+                  {((selectedNode.data.seedData as any[]) || []).length === 0 ? (
+                    <div className="text-[11px] text-white/40 italic text-center py-2 bg-white/[0.01] rounded-lg border border-dashed border-white/5">
+                      No seed data configured for this entity.
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto border border-white/[0.06] rounded-lg bg-[#040810]/50 max-h-[180px] p-scrollbar">
+                      <table className="w-full text-left text-[10px] border-collapse">
+                        <thead>
+                          <tr className="border-b border-white/[0.06] bg-white/[0.02]">
+                            {selectedAttrs.map(attr => (
+                              <th key={attr.name} className="px-2 py-1.5 font-mono text-white/50 border-r border-white/[0.06] whitespace-nowrap">
+                                {attr.name}
+                              </th>
+                            ))}
+                            <th className="px-2 py-1.5 text-right text-white/50">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {((selectedNode.data.seedData as any[]) || []).map((row, rowIdx) => (
+                            <tr key={rowIdx} className="border-b border-white/[0.04] hover:bg-white/[0.01]">
+                              {selectedAttrs.map(attr => (
+                                <td key={attr.name} className="px-1 py-1 border-r border-white/[0.04]">
+                                  <input
+                                    type={attr.type.includes("int") || attr.type.includes("serial") ? "number" : "text"}
+                                    value={row[attr.name] !== undefined ? row[attr.name] : ""}
+                                    onChange={(e) => {
+                                      const val = attr.type.includes("int") || attr.type.includes("serial") ? Number(e.target.value) : e.target.value;
+                                      const currentSeed = (selectedNode.data.seedData as any[]) || [];
+                                      const updatedSeed = currentSeed.map((r, idx) => {
+                                        if (idx === rowIdx) {
+                                          return { ...r, [attr.name]: val };
+                                        }
+                                        return r;
+                                      });
+                                      setNodes((nds: Node[]) => nds.map(n => {
+                                        if (n.id === selectedNodeId) {
+                                          return { ...n, data: { ...n.data, seedData: updatedSeed } };
+                                        }
+                                        return n;
+                                      }));
+                                      takeSnapshot();
+                                    }}
+                                    className="w-full min-w-[60px] bg-transparent border-0 outline-none px-1 text-white/80 focus:text-white"
+                                  />
+                                </td>
+                              ))}
+                              <td className="px-2 py-1 text-right">
+                                <button
+                                  onClick={() => {
+                                    const currentSeed = (selectedNode.data.seedData as any[]) || [];
+                                    const updatedSeed = currentSeed.filter((_, idx) => idx !== rowIdx);
+                                    setNodes((nds: Node[]) => nds.map(n => {
+                                      if (n.id === selectedNodeId) {
+                                        return { ...n, data: { ...n.data, seedData: updatedSeed } };
+                                      }
+                                      return n;
+                                    }));
+                                    takeSnapshot();
+                                  }}
+                                  className="text-red-400 hover:text-red-300"
+                                >
+                                  Delete
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
 
                 {/* Appearance Swatches & Settings Accordion */}

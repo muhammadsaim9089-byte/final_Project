@@ -28,7 +28,7 @@ export function useUndoRedo(
     currentIndexRef.current = currentIndex;
   }, [currentIndex]);
 
-  const takeSnapshot = useCallback(() => {
+  const takeSnapshot = useCallback((override?: HistoryState) => {
     if (isUndoingRef.current) return;
 
     const currentHistory = historyRef.current;
@@ -37,15 +37,18 @@ export function useUndoRedo(
     const newHistory = currentHistory.slice(0, currIndex + 1);
     const lastState = newHistory[newHistory.length - 1];
 
+    const snapNodes = override?.nodes ?? nodes;
+    const snapEdges = override?.edges ?? edges;
+
     if (
       lastState &&
-      JSON.stringify(lastState.nodes) === JSON.stringify(nodes) &&
-      JSON.stringify(lastState.edges) === JSON.stringify(edges)
+      JSON.stringify(lastState.nodes) === JSON.stringify(snapNodes) &&
+      JSON.stringify(lastState.edges) === JSON.stringify(snapEdges)
     ) {
       return;
     }
 
-    const nextHistory = [...newHistory, { nodes: JSON.parse(JSON.stringify(nodes)), edges: JSON.parse(JSON.stringify(edges)) }];
+    const nextHistory = [...newHistory, { nodes: JSON.parse(JSON.stringify(snapNodes)), edges: JSON.parse(JSON.stringify(snapEdges)) }];
     if (nextHistory.length > 50) nextHistory.shift();
 
     setHistory(nextHistory);

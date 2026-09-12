@@ -31,15 +31,18 @@ export function CrowsFootEdge(props: EdgeProps) {
   let markerStart = 'url(#crow-one)';
   let markerEnd = 'url(#crow-one)';
 
-  if (relType === 'one-to-many') {
+  if (relType === 'one-to-many' || relType === '1-N') {
     markerStart = 'url(#crow-one)';
     markerEnd = 'url(#crow-many)';
-  } else if (relType === 'many-to-one') {
+  } else if (relType === 'many-to-one' || relType === 'N-1') {
     markerStart = 'url(#crow-many)';
     markerEnd = 'url(#crow-one)';
   } else if (relType === 'many-to-many') {
     markerStart = 'url(#crow-many)';
     markerEnd = 'url(#crow-many)';
+  } else if (relType === 'one-to-one' || relType === '1-1') {
+    markerStart = 'url(#crow-one)';
+    markerEnd = 'url(#crow-one)';
   }
 
   return (

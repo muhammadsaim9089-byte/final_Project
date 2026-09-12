@@ -11,7 +11,6 @@ import {
   Edge,
   Node,
   BackgroundVariant,
-  Panel,
   ReactFlowInstance,
   Position,
   MiniMap
@@ -19,7 +18,8 @@ import {
 import '@xyflow/react/dist/style.css';
 import dagre from 'dagre';
 
-import { FloatingHeader } from "./FloatingHeader";
+import { TopNavbar } from "@/components/Layout/TopNavbar";
+import { CanvasBottomBar } from "./CanvasBottomBar";
 import { useLayout } from "@/components/Layout/LayoutContext";
 import { ToastContainer } from "../ui/toast";
 import { TableNode } from "./Nodes/TableNode";
@@ -31,12 +31,13 @@ import { HoverProvider } from "./HoverContext";
   
 import { DataTypesPanel } from "./DataTypesPanel";
 import { CursorDotGrid } from "./CursorDotGrid";
-import { CanvasToolbar, type DetailsLevel } from "./CanvasToolbar";
-import { validateCanvasSchema } from '@/lib/canvasValidation';
+import { type DetailsLevel } from "./CanvasToolbar";
 import { generateTables } from '@/lib/execution/export_sql';
 import { Schema } from '@/lib/execution/utils/schema_validator';
 import { useUndoRedo } from "@/hooks/useUndoRedo";
 import { UnifiedSidebar } from "./UnifiedSidebar";
+import { TableEditorModal } from "./Nodes/TableEditorModal";
+import { SampleDataModal } from "./Nodes/SampleDataModal";
 import { SqlSandbox } from "./SqlSandbox";
 import { Dashboard } from "./Dashboard";
 import { SpotlightSearch } from "./SpotlightSearch";
@@ -95,20 +96,26 @@ const getLayoutedElements = (nodes: Node[], edges: Edge[], direction = 'LR') => 
 
 const serializeCanvasToSchema = (nodes: Node[], edges: Edge[]): Schema => {
   const entities = nodes.map(node => {
-    const attributes = ((node.data.attributes as any[]) || []).map(attr => ({
+      const attributes = ((node.data.attributes as any[]) || []).map(attr => ({
       name: attr.name,
-      dataType: attr.type || 'varchar(255)',
+      dataType: attr.type || 'varchar',
       isPrimaryKey: !!attr.isPk,
-      isNullable: !attr.isPk && !attr.required,
+      isNullable: attr.allowNull !== undefined ? attr.allowNull : !attr.isPk,
       isUnique: !!attr.unique,
-      defaultValue: attr.defaultValue || null,
+      defaultValue: attr.defaultVal || attr.defaultValue || null,
+      size: attr.size || null,
+      autoIncrement: !!attr.autoIncrement,
     }));
     
     return {
       name: node.data.label as string,
       attributes,
       seedData: (node.data.seedData as any[]) || [],
-    };
+      description: node.data.comment || '',
+      group: (node.data.group as string) || '',
+      indexes: node.data.indexes || [],
+      constraints: node.data.constraints || [],
+    } as any;
   });
 
   const relationships = edges.map(edge => {
@@ -120,8 +127,8 @@ const serializeCanvasToSchema = (nodes: Node[], edges: Edge[]): Schema => {
       fromEntity: fromNode.data.label as string,
       toEntity: toNode.data.label as string,
       type: (edge.data?.relationshipType as any) || 'many-to-one',
-      foreignKey: (edge.data?.targetColumn as string) || (edge.data?.targetField as string) || '',
-      referencedKey: (edge.data?.sourceColumn as string) || (edge.data?.sourceField as string) || 'id',
+      foreignKey: (edge.data?.targetColumn as string) || (edge.data?.targetField as string) || edge.data?.foreignKey || '',
+      referencedKey: (edge.data?.sourceColumn as string) || (edge.data?.sourceField as string) || edge.data?.referencedKey || 'id',
       onDelete: (edge.data?.onDelete as any) || 'NO ACTION',
       onUpdate: (edge.data?.onUpdate as any) || 'CASCADE',
     };
@@ -150,7 +157,9 @@ export function Canvas() {
 
   // Dock toggle states
   const [showUnifiedSidebar, setShowUnifiedSidebar] = useState(false);
-  const [sidebarTab, setSidebarTab] = useState<"add" | "inspector" | "sql">("add");
+  const [sidebarTab, setSidebarTab] = useState<"add" | "inspector" | "views">("add");
+  const [activeEditingTableNodeId, setActiveEditingTableNodeId] = useState<string | "new" | null>(null);
+  const [activeSampleDataNodeId, setActiveSampleDataNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [showSqlSandbox, setShowSqlSandbox] = useState(false);
   const [showDashboard, setShowDashboard] = useState(false);
@@ -168,6 +177,43 @@ export function Canvas() {
   const [currentStepIdx, setCurrentStepIdx] = useState<number>(-1);
   const [isAuditing, setIsAuditing] = useState(false);
   const [auditTab, setAuditTab] = useState<"log" | "wizard">("log");
+
+  // Grid state & Layout Context
+  const [showGrid, setShowGrid] = useState(true);
+  const layout = useLayout();
+
+  // Clean tab switching mechanism (prevents circular re-render loops)
+  const prevActiveTabIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (layout.activeTabId !== prevActiveTabIdRef.current) {
+      const currentActiveId = layout.activeTabId;
+
+      // Save current state into previous tab if available
+      if (prevActiveTabIdRef.current) {
+        const prevId = prevActiveTabIdRef.current;
+        layoutRef.current.setTabs(prev =>
+          prev.map(t =>
+            t.id === prevId
+              ? { ...t, nodes: nodesRef.current, edges: edgesRef.current, generatedSql, generatedMermaid }
+              : t
+          )
+        );
+      }
+
+      // Load new active tab's elements
+      const newTab = layoutRef.current.tabs.find(t => t.id === currentActiveId);
+      if (newTab) {
+        setNodes(newTab.nodes || []);
+        setEdges(newTab.edges || []);
+        setGeneratedSql(newTab.generatedSql || "");
+        setGeneratedMermaid(newTab.generatedMermaid || "");
+        setProjectTitle(newTab.title || "Untitled Schema");
+      }
+
+      prevActiveTabIdRef.current = currentActiveId;
+    }
+  }, [layout.activeTabId]);
 
   const runAudit = async () => {
     setIsAuditing(true);
@@ -507,7 +553,6 @@ export function Canvas() {
 
   // Sidebar state
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [showGrid, setShowGrid] = useState(true);
 
   // Onboarding tour state
   const [tourStep, setTourStep] = useState<number | null>(null);
@@ -530,7 +575,6 @@ export function Canvas() {
     }
   }, []);
 
-  const layout = useLayout();
   const layoutRef = useRef(layout);
   useEffect(() => { layoutRef.current = layout; }, [layout]);
 
@@ -559,6 +603,28 @@ export function Canvas() {
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detailsLevel]);
+
+  // Listen for open-table-editor events from TableNode toolbar
+  useEffect(() => {
+    const handleOpenEditor = (e: any) => {
+      if (e.detail?.id) {
+        setActiveEditingTableNodeId(e.detail.id);
+      }
+    };
+    window.addEventListener("open-table-editor", handleOpenEditor);
+    return () => window.removeEventListener("open-table-editor", handleOpenEditor);
+  }, []);
+
+  // Listen for open-sample-data-modal events from TableNode toolbar / comment
+  useEffect(() => {
+    const handleOpenSampleData = (e: any) => {
+      if (e.detail?.id) {
+        setActiveSampleDataNodeId(e.detail.id);
+      }
+    };
+    window.addEventListener("open-sample-data-modal", handleOpenSampleData);
+    return () => window.removeEventListener("open-sample-data-modal", handleOpenSampleData);
+  }, []);
 
 
 
@@ -651,6 +717,42 @@ export function Canvas() {
     [nodes, rfInstance, setNodes]
   );
 
+  // --- Diagram Views: Focus & Highlight Node Handler ---
+  const handleFocusNodeFromViews = useCallback(
+    (nodeId: string) => {
+      setSelectedNodeId(nodeId);
+      setSelectedEdgeId(null);
+
+      const targetNode = nodes.find((n) => n.id === nodeId);
+      if (targetNode && rfInstance) {
+        const width = targetNode.measured?.width || 240;
+        const height = targetNode.measured?.height || 300;
+        const x = targetNode.position.x + width / 2;
+        const y = targetNode.position.y + height / 2;
+        rfInstance.setCenter(x, y, { zoom: 1.1, duration: 800 });
+
+        // Pulse highlight for 2.5 seconds
+        setNodes((nds) =>
+          nds.map((n) =>
+            n.id === nodeId
+              ? { ...n, data: { ...n.data, spotlightActive: true } }
+              : n
+          )
+        );
+        setTimeout(() => {
+          setNodes((nds) =>
+            nds.map((n) =>
+              n.id === nodeId
+                ? { ...n, data: { ...n.data, spotlightActive: false } }
+                : n
+            )
+          );
+        }, 2500);
+      }
+    },
+    [nodes, rfInstance, setNodes]
+  );
+
   useEffect(() => {
     if (layout.isSqlOpen) {
       setShowSqlSandbox(false);
@@ -663,7 +765,7 @@ export function Canvas() {
   // Keep stable refs for sidebar state to avoid stale closures in toggle handlers
   const showUnifiedSidebarRef = useRef<boolean>(showUnifiedSidebar);
   useEffect(() => { showUnifiedSidebarRef.current = showUnifiedSidebar; }, [showUnifiedSidebar]);
-  const sidebarTabRef = useRef<"add" | "inspector" | "sql">(sidebarTab);
+  const sidebarTabRef = useRef<"add" | "inspector" | "views">(sidebarTab);
   useEffect(() => { sidebarTabRef.current = sidebarTab; }, [sidebarTab]);
   // Refs for layout direction and edge style to prevent stale closures in registered handlers
   const layoutDirectionRef = useRef<'LR' | 'TB'>(layoutDirection);
@@ -680,7 +782,16 @@ export function Canvas() {
       layout.registerRfInstance(rfInstance);
     }
     if (layout && layout.registerToggleUnifiedSidebar) {
-      layout.registerToggleUnifiedSidebar((tab?: "add" | "inspector") => {
+      layout.registerToggleUnifiedSidebar((tab?: "add" | "inspector" | "views") => {
+        if (tab === "add") {
+          setShowUnifiedSidebar(false);
+          setShowSqlSandbox(false);
+          setIsReviewsOpen(false);
+          setShowDashboard(false);
+          layout.setSqlOpen(false);
+          setActiveEditingTableNodeId("new");
+          return;
+        }
         // read current values from refs
         if (showUnifiedSidebarRef.current && tab === sidebarTabRef.current) {
           setShowUnifiedSidebar(false);
@@ -1216,17 +1327,6 @@ export function Canvas() {
 
   return (
     <div className="w-full h-full flex flex-col relative text-sm">
-      <FloatingHeader
-        generatedSql={generatedSql}
-        generatedMermaid={generatedMermaid}
-        rfInstance={rfInstance}
-        showSidebar={showUnifiedSidebar}
-        projectTitle={projectTitle}
-        setProjectTitle={setProjectTitle}
-        currentProjectId={currentProjectId}
-        setCurrentProjectId={setCurrentProjectId}
-      />
-
       {/* ── Schema Diff Review Banner ── */}
       {pendingDiff && (
         <div className="absolute top-[52px] left-1/2 -translate-x-1/2 z-50 pointer-events-auto animate-in slide-in-from-top-2 duration-300">
@@ -1284,7 +1384,7 @@ export function Canvas() {
         </defs>
       </svg>
       
-        <div className="flex-1 h-full relative">
+        <div className="flex-1 h-full relative pt-0">
             <HoverProvider>
               <div className="absolute inset-0 z-0">
             {/* Animated dotted grid background */}
@@ -1305,14 +1405,23 @@ export function Canvas() {
               onNodeClick={(_event, node) => {
                 setSelectedNodeId(node.id);
                 setSelectedEdgeId(null);
+                // Table nodes: select only — do not open right sidebar (Edit Table uses modal)
+                if (node.type === "tableMode") {
+                  return;
+                }
                 setSidebarTab("inspector");
                 setShowUnifiedSidebar(true);
               }}
               onNodeDoubleClick={(_event, node) => {
-                setSelectedNodeId(node.id);
-                setSelectedEdgeId(null);
-                setSidebarTab("inspector");
-                setShowUnifiedSidebar(true);
+                if (node.type === "tableMode") {
+                  setShowUnifiedSidebar(false);
+                  setActiveEditingTableNodeId(node.id);
+                } else {
+                  setSelectedNodeId(node.id);
+                  setSelectedEdgeId(null);
+                  setSidebarTab("inspector");
+                  setShowUnifiedSidebar(true);
+                }
               }}
               onEdgeClick={(_event, edge) => {
                 setSelectedEdgeId(edge.id);
@@ -1332,24 +1441,16 @@ export function Canvas() {
 
               {/* Left Side Floating Dock Panel removed per design request */}
 
-              {/* Bottom-Left Toolbar: Undo / Redo / Zoom */}
-              <Panel
-                position="bottom-left"
-                className="pointer-events-none !m-0"
-                style={{ left: "88px", bottom: "24px" }}
-              >
-                <div className="pointer-events-auto bg-[#090C15]/80 backdrop-blur-xl border border-white/[0.08] rounded-xl px-1.5 py-1 shadow-[0_8px_32px_rgba(0,0,0,0.5)]">
-                  <CanvasToolbar
-                    undo={undo}
-                    redo={redo}
-                    canUndo={canUndo}
-                    canRedo={canRedo}
-                    rfInstance={rfInstance}
-                    detailsLevel={detailsLevel}
-                    setDetailsLevel={setDetailsLevel}
-                  />
-                </div>
-              </Panel>
+              {/* Floating Bottom Toolbar for Canvas Navigation and Controls */}
+              <CanvasBottomBar
+                undo={undo}
+                redo={redo}
+                canUndo={canUndo}
+                canRedo={canRedo}
+                rfInstance={rfInstance}
+                detailsLevel={detailsLevel}
+                setDetailsLevel={setDetailsLevel}
+              />
 
               {/* MiniMap for canvas navigation */}
               <MiniMap
@@ -1577,6 +1678,11 @@ export function Canvas() {
             sqlDialect={sqlDialect}
             setSqlDialect={setSqlDialect}
             takeSnapshot={takeSnapshot}
+            onFocusNode={handleFocusNodeFromViews}
+            onOpenTableEditor={(id) => {
+              setShowUnifiedSidebar(false);
+              setActiveEditingTableNodeId(id);
+            }}
           />
         )}
 
@@ -1701,13 +1807,9 @@ export function Canvas() {
 
 
 
-        {/* Compact Expanding Chatbox — bottom-center, sidebar-aware */}
+        {/* Compact Expanding Chatbox — bottom-center, stacked above toolbar */}
         <div 
-          className="absolute bottom-8 z-50 pointer-events-none transition-all duration-500 ease-out"
-          style={{
-            left: `calc(50% + ${chatboxOffset}px)`,
-            transform: 'translateX(-50%)',
-          }}
+          className="absolute bottom-20 left-1/2 -translate-x-1/2 z-50 pointer-events-none transition-all duration-500 ease-out"
         >
           <div 
             className={`pointer-events-auto flex items-center gap-2 rounded-full
@@ -1861,6 +1963,27 @@ export function Canvas() {
         <ShortcutsModal
           isOpen={isShortcutsOpen}
           onClose={() => setIsShortcutsOpen(false)}
+        />
+
+        {/* Table Editor Fullscreen Modal */}
+        <TableEditorModal
+          isOpen={activeEditingTableNodeId !== null}
+          tableNodeId={activeEditingTableNodeId}
+          nodes={nodes}
+          setNodes={setNodes}
+          edges={edges}
+          setEdges={setEdges}
+          onClose={() => setActiveEditingTableNodeId(null)}
+          takeSnapshot={takeSnapshot}
+        />
+
+        {/* Sample Data Records Modal */}
+        <SampleDataModal
+          isOpen={activeSampleDataNodeId !== null}
+          tableNodeId={activeSampleDataNodeId}
+          nodes={nodes}
+          onClose={() => setActiveSampleDataNodeId(null)}
+          onOpenEditModal={(id) => setActiveEditingTableNodeId(id)}
         />
 
         <ToastContainer />

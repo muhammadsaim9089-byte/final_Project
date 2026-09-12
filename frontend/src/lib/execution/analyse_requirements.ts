@@ -17,7 +17,7 @@ export async function analyzeRequirements(req: AnalyzeRequest): Promise<any> {
   }
 
   const groq = new Groq({ apiKey });
-  const modelName = req.model || 'llama-3.3-70b-versatile';
+  const modelName = req.model || 'openai/gpt-oss-120b';
   const temperature = req.temperature || 0.1;
 
   try {

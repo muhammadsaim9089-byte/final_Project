@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { CanvasLoader } from "./CanvasLoader";
 
@@ -8,11 +8,33 @@ export function PromptBox() {
   const router = useRouter();
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Prefetch the canvas page on mount so chunks are ready before navigation
   useEffect(() => {
     router.prefetch("/canvas");
   }, [router]);
+
+  // Auto-resize textarea height on every change
+  const autoResize = useCallback(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    // Reset to 1-row so scrollHeight recalculates from content
+    el.style.height = "0px";
+    // Grow to fit content, capped at ~8 lines (200px)
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+  }, []);
+
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setPrompt(e.target.value);
+    // Resize immediately in the same frame
+    requestAnimationFrame(autoResize);
+  };
+
+  // Also resize when prompt changes externally (e.g. chip click)
+  useEffect(() => {
+    autoResize();
+  }, [prompt, autoResize]);
 
   const handleSubmit = () => {
     if (!prompt.trim()) return;
@@ -26,8 +48,9 @@ export function PromptBox() {
     router.replace("/canvas");
   }, [router]);
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
       handleSubmit();
     }
   };
@@ -36,25 +59,29 @@ export function PromptBox() {
     <>
       {loading && <CanvasLoader onComplete={handleLoaderComplete} />}
 
-      <div className="w-full max-w-2xl mx-auto flex flex-col items-center gap-6">
-        {/* Tailwind Prompt Wrapper */}
-        <div className="flex justify-center items-center w-full h-full bg-transparent font-sans">
-          <div className="group flex items-center w-fit min-w-[280px] bg-white/[0.06] border border-white/10 rounded-full backdrop-blur-md p-1.5 transition-all duration-300 hover:border-[#4f46e5] hover:shadow-[0_0_15px_rgba(79,70,229,0.2)] focus-within:shadow-[0_0_20px_rgba(79,70,229,0.4)] focus-within:border-[#4f46e5] focus-within:bg-white/[0.08]">
-            <input
-              type="text"
-              className="flex-1 w-full min-w-[240px] max-w-[400px] px-5 py-3 text-[15px] text-white bg-transparent border-none outline-none transition-all duration-300 placeholder:text-white/55 focus:min-w-[380px]"
-              placeholder="Ask AI anything..."
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              onKeyDown={handleKeyDown}
-            />
-            <button 
-              onClick={handleSubmit}
-              disabled={!prompt.trim()}
-              className="bg-[#4f46e5] border-none w-[38px] h-[38px] rounded-full cursor-pointer transition-all duration-300 flex justify-center items-center ml-2.5 hover:bg-[#6366f1] hover:shadow-[0_0_10px_rgba(99,102,241,0.5)] hover:-rotate-90 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <span className="text-white text-[16px]">➤</span>
-            </button>
+      <div className="w-full max-w-3xl mx-auto flex flex-col items-center gap-6 px-4">
+        {/* Prompt Container */}
+        <div className="w-full flex justify-center">
+          <div className="relative w-full max-w-2xl bg-white/[0.06] border border-white/10 rounded-2xl backdrop-blur-md overflow-hidden transition-all duration-300 hover:border-[#4f46e5] hover:shadow-[0_0_15px_rgba(79,70,229,0.2)] focus-within:shadow-[0_0_20px_rgba(79,70,229,0.4)] focus-within:border-[#4f46e5] focus-within:bg-white/[0.08]">
+            <div className="flex items-end gap-2 p-3">
+              <textarea
+                ref={textareaRef}
+                rows={1}
+                className="flex-1 min-h-[40px] px-3 py-2 text-[15px] text-white bg-transparent border-none outline-none placeholder:text-white/55 resize-none overflow-y-auto leading-relaxed scrollbar-hide"
+                style={{ maxHeight: "200px" }}
+                placeholder="Ask AI anything..."
+                value={prompt}
+                onChange={handleChange}
+                onKeyDown={handleKeyDown}
+              />
+              <button 
+                onClick={handleSubmit}
+                disabled={!prompt.trim()}
+                className="bg-[#4f46e5] border-none w-[38px] h-[38px] rounded-full cursor-pointer transition-all duration-300 flex justify-center items-center shrink-0 hover:bg-[#6366f1] hover:shadow-[0_0_10px_rgba(99,102,241,0.5)] hover:-rotate-90 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <span className="text-white text-[16px]">➤</span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -98,3 +125,4 @@ export function PromptBox() {
     </>
   );
 }
+

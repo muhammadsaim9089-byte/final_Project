@@ -7,13 +7,29 @@ export const AttributeSchema = z.object({
   isNullable: z.boolean().default(false),
   isUnique: z.boolean().default(false),
   defaultValue: z.string().nullable().optional(),
+  size: z.string().nullable().optional(),
+  autoIncrement: z.boolean().optional(),
+});
+
+export const TableIndexSchema = z.object({
+  name: z.string(),
+  columns: z.array(z.string()),
+  type: z.string().default('BTREE'),
+});
+
+export const TableConstraintSchema = z.object({
+  name: z.string(),
+  expression: z.string(),
 });
 
 export const EntitySchema = z.object({
   name: z.string(),
   description: z.string().optional(),
+  group: z.string().optional(),
   attributes: z.array(AttributeSchema),
   seedData: z.array(z.record(z.any())).optional(),
+  indexes: z.array(TableIndexSchema).optional(),
+  constraints: z.array(TableConstraintSchema).optional(),
 });
 
 export const RelationshipSchema = z.object({

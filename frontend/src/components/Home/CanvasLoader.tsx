@@ -72,7 +72,7 @@ interface CanvasLoaderProps {
   totalMs?: number;
 }
 
-export function CanvasLoader({ onComplete, totalMs = 8000 }: CanvasLoaderProps) {
+export function CanvasLoader({ onComplete, totalMs = 1200 }: CanvasLoaderProps) {
   const [exiting, _setExiting] = useState(false);
 
   useEffect(() => {

@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
-import { PlusSquare, Component, FileCode2, X, Trash2, Key, Copy, Check, Info, Settings, ArrowUp, ArrowRightLeft } from "lucide-react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { PlusSquare, Component, FileCode2, X, Trash2, Key, Copy, Check, Info, Settings, ArrowUp, ArrowRightLeft, Eye, EyeOff, Search, Layers, ChevronDown, ChevronRight, Plus, MoreVertical, Star, Table2, Users, Pencil, CopyPlus, RotateCcw } from "lucide-react";
 import { Node, Edge } from "@xyflow/react";
 import { parseSqlDdl } from "../../lib/sqlParser";
 
@@ -35,12 +35,546 @@ interface UnifiedSidebarProps {
   onAutoLayout: () => void;
   onDeleteNode?: (id: string) => void;
   generatedSql: string;
-  activeTab: "add" | "inspector" | "sql";
-  setActiveTab: (tab: "add" | "inspector" | "sql") => void;
+  activeTab: "add" | "inspector" | "views";
+  setActiveTab: (tab: "add" | "inspector" | "views") => void;
   onClose: () => void;
   sqlDialect: string;
   setSqlDialect: (dialect: string) => void;
   takeSnapshot: () => void;
+  onFocusNode?: (nodeId: string) => void;
+  onOpenTableEditor?: (id: string | "new") => void;
+}
+
+// ─── Types ───
+interface DiagramView {
+  id: string;
+  name: string;
+  hiddenTableIds: Set<string>;
+  isDefault: boolean;
+}
+
+// ─── Diagram Views Panel (dbdiagram.io-style) ───
+function DiagramViewsPanel({
+  nodes,
+  setNodes,
+  edges,
+  setEdges,
+  takeSnapshot,
+  onFocusNode,
+}: {
+  nodes: Node[];
+  setNodes: any;
+  edges: Edge[];
+  setEdges: any;
+  takeSnapshot: () => void;
+  onFocusNode?: (nodeId: string) => void;
+}) {
+  // ── View Management State ──
+  const [views, setViews] = useState<DiagramView[]>([
+    { id: "default", name: "Default View", hiddenTableIds: new Set(), isDefault: true },
+  ]);
+  const [activeViewId, setActiveViewId] = useState("default");
+  const [unsavedChanges, setUnsavedChanges] = useState(false);
+
+  // ── UI State ──
+  const [searchQuery, setSearchQuery] = useState("");
+  const [groupBy, setGroupBy] = useState<"schema" | "tableGroup">("schema");
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [viewDropdownOpen, setViewDropdownOpen] = useState(false);
+  const [groupByDropdownOpen, setGroupByDropdownOpen] = useState(false);
+  const [viewMenuId, setViewMenuId] = useState<string | null>(null);
+  const [renamingViewId, setRenamingViewId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+
+  const viewDropdownRef = useRef<HTMLDivElement>(null);
+  const groupByDropdownRef = useRef<HTMLDivElement>(null);
+  const viewMenuRef = useRef<HTMLDivElement>(null);
+
+  const activeView = views.find(v => v.id === activeViewId) || views[0];
+
+  // ── Close dropdowns on outside click ──
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (viewDropdownRef.current && !viewDropdownRef.current.contains(e.target as HTMLElement)) {
+        setViewDropdownOpen(false);
+      }
+      if (groupByDropdownRef.current && !groupByDropdownRef.current.contains(e.target as HTMLElement)) {
+        setGroupByDropdownOpen(false);
+      }
+      if (viewMenuRef.current && !viewMenuRef.current.contains(e.target as HTMLElement)) {
+        setViewMenuId(null);
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
+  // ── Table Nodes ──
+  const tableNodes = nodes.filter(n => n.type === "tableMode");
+
+  // Filter by search
+  const filtered = tableNodes.filter(n => {
+    const label = (n.data.label as string).toLowerCase();
+    const schema = ((n.data.schema as string) || "public").toLowerCase();
+    const group = ((n.data.group as string) || "").toLowerCase();
+    const q = searchQuery.toLowerCase();
+    return label.includes(q) || schema.includes(q) || group.includes(q);
+  });
+
+  // ── Grouping ──
+  const grouped: Record<string, Node[]> = {};
+  filtered.forEach(n => {
+    let key: string;
+    if (groupBy === "schema") {
+      key = (n.data.schema as string) || "public";
+    } else {
+      key = (n.data.group as string) || "Ungrouped";
+    }
+    if (!grouped[key]) grouped[key] = [];
+    grouped[key].push(n);
+  });
+
+  const sortedGroupKeys = Object.keys(grouped).sort((a, b) => {
+    if (a === "Ungrouped") return 1;
+    if (b === "Ungrouped") return -1;
+    return a.localeCompare(b);
+  });
+
+  // ── Visibility Helpers ──
+  const toggleTableVisibility = (tableId: string) => {
+    const targetNode = nodes.find(n => n.id === tableId);
+    if (!targetNode) return;
+    const nextHidden = !targetNode.hidden;
+
+    setNodes((nds: Node[]) => nds.map((n: Node) =>
+      n.id === tableId ? { ...n, hidden: nextHidden } : n
+    ));
+    setEdges((eds: Edge[]) => eds.map((e: Edge) => {
+      if (e.source === tableId || e.target === tableId) {
+        if (nextHidden) return { ...e, hidden: true };
+        const otherId = e.source === tableId ? e.target : e.source;
+        const otherNode = nodes.find(nd => nd.id === otherId);
+        return { ...e, hidden: !!otherNode?.hidden };
+      }
+      return e;
+    }));
+    setUnsavedChanges(true);
+    takeSnapshot();
+  };
+
+  const toggleGroupVisibility = (groupNodes: Node[]) => {
+    const allVisible = groupNodes.every(n => !n.hidden);
+    const nextHidden = allVisible;
+    const ids = new Set(groupNodes.map(n => n.id));
+
+    setNodes((nds: Node[]) => nds.map((n: Node) =>
+      ids.has(n.id) ? { ...n, hidden: nextHidden } : n
+    ));
+    setEdges((eds: Edge[]) => eds.map((e: Edge) => {
+      if (ids.has(e.source) || ids.has(e.target)) {
+        if (nextHidden) return { ...e, hidden: true };
+        const srcHidden = ids.has(e.source) ? nextHidden : !!nodes.find(nd => nd.id === e.source)?.hidden;
+        const tgtHidden = ids.has(e.target) ? nextHidden : !!nodes.find(nd => nd.id === e.target)?.hidden;
+        return { ...e, hidden: srcHidden || tgtHidden };
+      }
+      return e;
+    }));
+    setUnsavedChanges(true);
+    takeSnapshot();
+  };
+
+  const showAll = () => {
+    setNodes((nds: Node[]) => nds.map((n: Node) => ({ ...n, hidden: false })));
+    setEdges((eds: Edge[]) => eds.map((e: Edge) => ({ ...e, hidden: false })));
+    setUnsavedChanges(true);
+    takeSnapshot();
+  };
+
+  const toggleGlobalVisibility = () => {
+    const allVisible = tableNodes.every(n => !n.hidden);
+    if (allVisible) {
+      setNodes((nds: Node[]) => nds.map((n: Node) =>
+        n.type === "tableMode" ? { ...n, hidden: true } : n
+      ));
+      setEdges((eds: Edge[]) => eds.map((e: Edge) => ({ ...e, hidden: true })));
+    } else {
+      showAll();
+    }
+    setUnsavedChanges(true);
+    takeSnapshot();
+  };
+
+  // ── Group collapse ──
+  const toggleGroup = (key: string) => {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  // ── View Management ──
+  const createNewView = () => {
+    const currentHidden = new Set(tableNodes.filter(n => n.hidden).map(n => n.id));
+    const newView: DiagramView = {
+      id: `view-${Date.now()}`,
+      name: `View ${views.length}`,
+      hiddenTableIds: currentHidden,
+      isDefault: false,
+    };
+    setViews(prev => [...prev, newView]);
+    setActiveViewId(newView.id);
+    setRenamingViewId(newView.id);
+    setRenameValue(newView.name);
+    setViewDropdownOpen(false);
+    setUnsavedChanges(false);
+  };
+
+  const switchView = (viewId: string) => {
+    const view = views.find(v => v.id === viewId);
+    if (!view) return;
+    setActiveViewId(viewId);
+    setViewDropdownOpen(false);
+
+    // Apply view visibility
+    setNodes((nds: Node[]) => nds.map((n: Node) => {
+      if (n.type === "tableMode") {
+        return { ...n, hidden: view.hiddenTableIds.has(n.id) };
+      }
+      return n;
+    }));
+    setEdges((eds: Edge[]) => eds.map((e: Edge) => {
+      const srcHidden = view.hiddenTableIds.has(e.source);
+      const tgtHidden = view.hiddenTableIds.has(e.target);
+      return { ...e, hidden: srcHidden || tgtHidden };
+    }));
+    setUnsavedChanges(false);
+    takeSnapshot();
+  };
+
+  const saveCurrentView = () => {
+    const currentHidden = new Set(tableNodes.filter(n => n.hidden).map(n => n.id));
+    setViews(prev => prev.map(v =>
+      v.id === activeViewId ? { ...v, hiddenTableIds: currentHidden } : v
+    ));
+    setUnsavedChanges(false);
+  };
+
+  const resetCurrentView = () => {
+    switchView(activeViewId);
+    setUnsavedChanges(false);
+  };
+
+  const deleteView = (viewId: string) => {
+    if (viewId === "default") return;
+    setViews(prev => prev.filter(v => v.id !== viewId));
+    if (activeViewId === viewId) switchView("default");
+    setViewMenuId(null);
+  };
+
+  const duplicateView = (viewId: string) => {
+    const original = views.find(v => v.id === viewId);
+    if (!original) return;
+    const dup: DiagramView = {
+      id: `view-${Date.now()}`,
+      name: `${original.name} (copy)`,
+      hiddenTableIds: new Set(original.hiddenTableIds),
+      isDefault: false,
+    };
+    setViews(prev => [...prev, dup]);
+    setActiveViewId(dup.id);
+    setViewMenuId(null);
+    setUnsavedChanges(false);
+  };
+
+  const finishRename = (viewId: string) => {
+    if (renameValue.trim()) {
+      setViews(prev => prev.map(v =>
+        v.id === viewId ? { ...v, name: renameValue.trim() } : v
+      ));
+    }
+    setRenamingViewId(null);
+  };
+
+  const visibleCount = tableNodes.filter(n => !n.hidden).length;
+  const totalCount = tableNodes.length;
+
+  return (
+    <div className="flex flex-col h-full gap-3">
+      {/* ══════════ VIEW SELECTOR ══════════ */}
+      <div className="relative" ref={viewDropdownRef}>
+        <div className="flex items-center gap-1.5">
+          {/* View selector button */}
+          <button
+            onClick={() => setViewDropdownOpen(!viewDropdownOpen)}
+            className="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg bg-[#4A90D9]/15 border border-[#4A90D9]/25 text-[#4A90D9] hover:bg-[#4A90D9]/20 transition-all text-left"
+          >
+            <Star size={13} className="shrink-0 fill-current" />
+            <span className="text-[12px] font-semibold flex-1 truncate">{activeView.name}</span>
+            <ChevronDown size={14} className={`shrink-0 transition-transform ${viewDropdownOpen ? "rotate-180" : ""}`} />
+          </button>
+
+          {/* Three-dot menu for current view */}
+          {!activeView.isDefault && (
+            <div className="relative" ref={viewMenuRef}>
+              <button
+                onClick={() => setViewMenuId(viewMenuId === activeViewId ? null : activeViewId)}
+                className="p-2 rounded-lg border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.05] text-white/40 hover:text-white/70 transition-all"
+              >
+                <MoreVertical size={14} />
+              </button>
+              {viewMenuId === activeViewId && (
+                <div className="absolute right-0 top-full mt-1 bg-[#0D1117] border border-white/[0.08] rounded-lg shadow-xl z-50 py-1 min-w-[140px]">
+                  <button
+                    onClick={() => { setRenamingViewId(activeViewId); setRenameValue(activeView.name); setViewMenuId(null); }}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-white/70 hover:bg-white/[0.04] transition-colors"
+                  >
+                    <Pencil size={11} /> Rename
+                  </button>
+                  <button
+                    onClick={() => duplicateView(activeViewId)}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-white/70 hover:bg-white/[0.04] transition-colors"
+                  >
+                    <CopyPlus size={11} /> Duplicate
+                  </button>
+                  <div className="h-px bg-white/[0.06] my-1" />
+                  <button
+                    onClick={() => deleteView(activeViewId)}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-red-400 hover:bg-red-400/[0.06] transition-colors"
+                  >
+                    <Trash2 size={11} /> Delete
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* View dropdown */}
+        {viewDropdownOpen && (
+          <div className="absolute left-0 right-0 top-full mt-1 bg-[#0D1117] border border-white/[0.08] rounded-lg shadow-xl z-50 py-1 max-h-[200px] overflow-y-auto">
+            {views.map(v => (
+              <button
+                key={v.id}
+                onClick={() => switchView(v.id)}
+                className={`w-full flex items-center gap-2 px-3 py-2 text-[11px] hover:bg-white/[0.04] transition-colors ${v.id === activeViewId ? "text-[#4A90D9]" : "text-white/70"}`}
+              >
+                {v.id === activeViewId ? <Check size={12} className="shrink-0" /> : <div className="w-3" />}
+                <span className="flex-1 text-left truncate">{v.name}</span>
+              </button>
+            ))}
+            <div className="h-px bg-white/[0.06] my-1" />
+            <button
+              onClick={createNewView}
+              className="w-full flex items-center gap-2 px-3 py-2 text-[11px] text-white/60 hover:bg-white/[0.04] hover:text-white/80 transition-colors"
+            >
+              <Plus size={12} className="shrink-0" />
+              <span className="flex-1 text-left">New View</span>
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Rename Inline Input */}
+      {renamingViewId && (
+        <div className="flex items-center gap-1.5">
+          <input
+            autoFocus
+            type="text"
+            value={renameValue}
+            onChange={e => setRenameValue(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") finishRename(renamingViewId); if (e.key === "Escape") setRenamingViewId(null); }}
+            onBlur={() => finishRename(renamingViewId)}
+            className="flex-1 bg-white/[0.04] border border-[#4A90D9]/30 rounded-lg px-2.5 py-1.5 text-[11px] text-white outline-none focus:border-[#4A90D9]/60 transition-all"
+          />
+        </div>
+      )}
+
+      {/* Save / Reset buttons */}
+      {unsavedChanges && (
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={resetCurrentView}
+            className="flex items-center gap-1 px-2.5 py-1.5 text-[10px] font-medium rounded-lg border border-white/[0.06] bg-white/[0.02] text-white/50 hover:text-white/70 hover:bg-white/[0.04] transition-all"
+          >
+            <RotateCcw size={10} /> Reset
+          </button>
+          <button
+            onClick={saveCurrentView}
+            className="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 text-[10px] font-bold rounded-lg bg-[#4A90D9] text-white hover:bg-[#5BA0E9] transition-all shadow-lg shadow-[#4A90D9]/20"
+          >
+            Save
+          </button>
+        </div>
+      )}
+
+      {/* ══════════ SEARCH ══════════ */}
+      <div className="relative">
+        <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={e => setSearchQuery(e.target.value)}
+          placeholder="Search table, schema or group"
+          className="w-full bg-white/[0.03] border border-white/[0.06] rounded-xl pl-9 pr-3 py-2 text-xs text-white placeholder:text-white/25 outline-none focus:border-[#4A90D9]/40 focus:ring-1 focus:ring-[#4A90D9]/20 transition-all"
+        />
+      </div>
+
+      {/* ══════════ GROUP BY ══════════ */}
+      <div className="relative flex items-center gap-2" ref={groupByDropdownRef}>
+        <Layers size={13} className="text-white/35 shrink-0" />
+        <button
+          onClick={() => setGroupByDropdownOpen(!groupByDropdownOpen)}
+          className="flex-1 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/[0.03] border border-white/[0.06] hover:border-white/[0.12] transition-all cursor-pointer"
+        >
+          <span className="text-[11px] text-white/55 font-medium">Group by:</span>
+          <span className="text-[11px] text-white/80 font-semibold flex-1">{groupBy === "schema" ? "Schema" : "Table Group"}</span>
+          <ChevronDown size={12} className={`text-white/35 transition-transform ${groupByDropdownOpen ? "rotate-180" : ""}`} />
+        </button>
+        {/* Global visibility toggle */}
+        <button
+          onClick={toggleGlobalVisibility}
+          className="p-1.5 rounded-lg hover:bg-white/[0.04] transition-colors"
+          title={tableNodes.every(n => !n.hidden) ? "Hide all" : "Show all"}
+        >
+          {tableNodes.every(n => !n.hidden)
+            ? <Eye size={14} className="text-[#4A90D9]" />
+            : <EyeOff size={14} className="text-white/30" />}
+        </button>
+
+        {/* Group-by dropdown */}
+        {groupByDropdownOpen && (
+          <div className="absolute left-5 top-full mt-1 bg-[#0D1117] border border-white/[0.08] rounded-lg shadow-xl z-50 py-1 min-w-[150px]">
+            <button
+              onClick={() => { setGroupBy("schema"); setGroupByDropdownOpen(false); }}
+              className={`w-full flex items-center gap-2 px-3 py-2 text-[11px] hover:bg-white/[0.04] transition-colors ${groupBy === "schema" ? "text-[#4A90D9]" : "text-white/70"}`}
+            >
+              {groupBy === "schema" ? <Check size={12} /> : <div className="w-3" />}
+              Schema
+            </button>
+            <button
+              onClick={() => { setGroupBy("tableGroup"); setGroupByDropdownOpen(false); }}
+              className={`w-full flex items-center gap-2 px-3 py-2 text-[11px] hover:bg-white/[0.04] transition-colors ${groupBy === "tableGroup" ? "text-[#4A90D9]" : "text-white/70"}`}
+            >
+              {groupBy === "tableGroup" ? <Check size={12} /> : <div className="w-3" />}
+              Table Group
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* ══════════ TABLE LIST ══════════ */}
+      <div className="flex-1 space-y-1 overflow-y-auto min-h-0 pr-0.5" style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(255,255,255,0.08) transparent" }}>
+        {sortedGroupKeys.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-12 text-center text-white/25 text-xs italic select-none">
+            <Table2 size={28} className="mb-2 text-white/10" />
+            No tables found.
+          </div>
+        )}
+        {sortedGroupKeys.map(groupKey => {
+          const groupNodes = grouped[groupKey];
+          const isCollapsed = collapsedGroups.has(groupKey);
+          const groupVisibleCount = groupNodes.filter(n => !n.hidden).length;
+          const allGroupVisible = groupNodes.every(n => !n.hidden);
+
+          return (
+            <div key={groupKey} className="rounded-lg border border-white/[0.04] bg-white/[0.008] overflow-hidden">
+              {/* Group Header */}
+              <button
+                onClick={() => toggleGroup(groupKey)}
+                className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-white/[0.02] transition-colors group/ghdr"
+              >
+                {isCollapsed
+                  ? <ChevronRight size={11} className="text-white/35 shrink-0" />
+                  : <ChevronDown size={11} className="text-white/35 shrink-0" />}
+                <Users size={12} className="text-white/35 shrink-0" />
+                <span className="text-[11px] font-semibold text-white/65 flex-1 truncate">{groupKey}</span>
+                <span className="text-[9px] font-mono text-white/25 bg-white/[0.04] px-1.5 py-0.5 rounded-full shrink-0">
+                  {groupVisibleCount}/{groupNodes.length}
+                </span>
+                <button
+                  onClick={e => { e.stopPropagation(); toggleGroupVisibility(groupNodes); }}
+                  className="p-0.5 rounded hover:bg-white/[0.06] transition-colors opacity-60 group-hover/ghdr:opacity-100"
+                  title={allGroupVisible ? "Hide group" : "Show group"}
+                >
+                  {allGroupVisible
+                    ? <Eye size={12} className="text-[#4A90D9]/70" />
+                    : <EyeOff size={12} className="text-white/25" />}
+                </button>
+              </button>
+
+              {/* Table Items */}
+              {!isCollapsed && (
+                <div className="border-t border-white/[0.03]">
+                  {groupNodes
+                    .sort((a, b) => (a.data.label as string).localeCompare(b.data.label as string))
+                    .map(node => {
+                      const isHidden = !!node.hidden;
+                      const schema = (node.data.schema as string) || "public";
+                      const displayName = groupBy === "schema"
+                        ? (node.data.label as string)
+                        : `${schema}.${node.data.label as string}`;
+
+                      return (
+                        <div
+                          key={node.id}
+                          className={`flex items-center gap-2 pl-7 pr-3 py-[5px] group/row hover:bg-white/[0.025] transition-colors cursor-pointer ${
+                            isHidden ? "opacity-35" : ""
+                          }`}
+                        >
+                          <Table2 size={12} className={`shrink-0 ${isHidden ? "text-white/20" : "text-white/40"}`} />
+                          <span
+                            onClick={() => {
+                              if (!isHidden && onFocusNode) onFocusNode(node.id);
+                            }}
+                            className={`text-[11px] flex-1 truncate font-medium transition-colors ${
+                              isHidden
+                                ? "text-white/30 line-through cursor-default"
+                                : "text-white/75 hover:text-[#4A90D9] cursor-pointer"
+                            }`}
+                            title={isHidden ? "Table hidden" : `Click to focus ${node.data.label}`}
+                          >
+                            {displayName}
+                          </span>
+                          <button
+                            onClick={e => { e.stopPropagation(); toggleTableVisibility(node.id); }}
+                            className="p-0.5 rounded-md hover:bg-white/[0.06] transition-all opacity-0 group-hover/row:opacity-100"
+                            title={isHidden ? "Show table" : "Hide table"}
+                          >
+                            {isHidden
+                              ? <EyeOff size={12} className="text-white/30" />
+                              : <Eye size={12} className="text-[#4A90D9]" />}
+                          </button>
+                        </div>
+                      );
+                    })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* ══════════ BOTTOM ALL TOGGLE ══════════ */}
+      <div className="pt-2 border-t border-white/[0.05]">
+        <button
+          onClick={showAll}
+          className={`w-full flex items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-semibold rounded-lg transition-all ${
+            visibleCount === totalCount
+              ? "bg-[#4A90D9]/15 border border-[#4A90D9]/25 text-[#4A90D9]"
+              : "bg-white/[0.03] border border-white/[0.06] text-white/50 hover:text-white/70 hover:bg-white/[0.05]"
+          }`}
+        >
+          <Eye size={13} />
+          All
+          {visibleCount < totalCount && (
+            <span className="text-[9px] font-mono opacity-60 ml-1">({visibleCount}/{totalCount})</span>
+          )}
+        </button>
+      </div>
+    </div>
+  );
 }
 
 export function UnifiedSidebar({
@@ -62,7 +596,9 @@ export function UnifiedSidebar({
   onClose,
   sqlDialect,
   setSqlDialect,
-  takeSnapshot
+  takeSnapshot,
+  onFocusNode,
+  onOpenTableEditor,
 }: UnifiedSidebarProps) {
   
   // --- ADD TAB STATES ---
@@ -444,6 +980,11 @@ export function UnifiedSidebar({
       return;
     }
 
+    if (templateType === "blank" && onOpenTableEditor) {
+      onOpenTableEditor("new");
+      return;
+    }
+
     let name = uniqueName(tableName.trim() || "new_table");
     let attrs: NodeAttribute[] = [];
 
@@ -704,7 +1245,17 @@ export function UnifiedSidebar({
           <Component size={13} />
           Inspector
         </button>
-        {/* SQL moved to left workspace panel — removed from right sidebar */}
+        <button
+          onClick={() => { setActiveTab("views"); setSelectedNodeId(null); setSelectedEdgeId(null); }}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-semibold rounded-xl transition-all ${
+            activeTab === "views" 
+              ? "bg-[#4A90D9]/15 border border-[#4A90D9]/30 text-white shadow-inner" 
+              : "text-white/60 hover:text-white hover:bg-white/[0.03] border border-transparent"
+          }`}
+        >
+          <Layers size={13} />
+          Views
+        </button>
         
         <button 
           onClick={onClose} 
@@ -726,8 +1277,17 @@ export function UnifiedSidebar({
               <span className="text-[9px] text-[#4A90D9] bg-[#4A90D9]/10 border border-[#4A90D9]/20 px-1.5 py-0.5 rounded font-mono font-bold uppercase">Builder</span>
             </div>
 
+            {onOpenTableEditor && (
+              <button
+                onClick={() => onOpenTableEditor("new")}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 text-xs font-bold rounded-xl bg-[#4A90D9] text-white hover:bg-[#5ba0e9] transition-all shadow-lg shadow-[#4A90D9]/15"
+              >
+                <PlusSquare size={14} /> Open Fullscreen Table Editor
+              </button>
+            )}
+
             <div className="space-y-1.5">
-              <label className="text-[11px] text-white/65 font-sans font-medium tracking-wide">Table Name</label>
+              <label className="text-[11px] text-white/65 font-sans font-medium tracking-wide">Table Name (presets)</label>
               <input 
                 value={tableName} 
                 onChange={e => setTableName(e.target.value)} 
@@ -744,7 +1304,7 @@ export function UnifiedSidebar({
                   onChange={e => setTemplateType(e.target.value)}
                   className="w-full bg-[#080E18] border border-white/[0.08] rounded-lg px-3 py-2.5 text-xs text-white outline-none appearance-none cursor-pointer focus:border-[#4A90D9]/50 transition-all"
                 >
-                  <option value="blank">Custom Columns Table</option>
+                  <option value="blank">Custom Columns Table (use Fullscreen Editor above)</option>
                   <option value="users">Users Preset (Single Table)</option>
                   <option value="products">Products Preset (Single Table)</option>
                   <option value="auth">Auth & RBAC Preset (5 Connected Tables)</option>
@@ -929,125 +1489,106 @@ export function UnifiedSidebar({
                   <span className="text-[9px] text-[#4A90D9] bg-[#4A90D9]/10 border border-[#4A90D9]/20 px-1.5 py-0.5 rounded font-mono font-bold uppercase">Entity</span>
                 </div>
 
-                {/* Table Name Title Inline Editor */}
-                <div className="space-y-1.5 bg-white/[0.01] border border-white/[0.04] p-3 rounded-xl">
-                  <span className="text-[10px] text-white/45 uppercase font-sans tracking-wide block">Physical Table Name</span>
-                  {editingNodeName ? (
-                    <div className="flex items-center gap-1.5">
-                      <input 
-                        type="text" 
-                        value={newNodeName} 
-                        onChange={e => setNewNodeName(e.target.value)}
-                        className="flex-1 bg-white/[0.06] border border-[#4A90D9]/40 rounded-lg px-2.5 py-1 text-xs text-[#C9C8C7] font-mono outline-none" 
-                      />
-                      <button onClick={renameNode} className="p-1 rounded bg-[#4A90D9] text-white"><Check size={12} /></button>
-                      <button onClick={() => setEditingNodeName(false)} className="p-1 rounded bg-white/5 text-white/60"><X size={12} /></button>
-                    </div>
-                  ) : (
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-[#C9C8C7] font-mono font-bold truncate drop-shadow-[0_0_6px_rgba(74,144,217,0.2)]">
+                <div className="space-y-3 bg-white/[0.01] border border-white/[0.04] p-3 rounded-xl">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <span className="text-[10px] text-white/45 uppercase font-sans tracking-wide block">Physical Table Name</span>
+                      <span className="text-xs text-[#C9C8C7] font-mono font-bold truncate block">
                         {selectedNode.data.label as string}
                       </span>
-                      <button 
-                        onClick={() => { setNewNodeName(selectedNode.data.label as string); setEditingNodeName(true); }}
-                        className="text-[10px] text-[#4A90D9] hover:underline"
-                      >
-                        Rename
-                      </button>
                     </div>
-                  )}
+                    {onOpenTableEditor && selectedNode.type === "tableMode" && (
+                      <button
+                        onClick={() => onOpenTableEditor(selectedNode.id)}
+                        className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-bold rounded-lg bg-[#4A90D9] text-white hover:bg-[#5ba0e9] transition-all"
+                      >
+                        <Pencil size={11} /> Edit Table
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-white/40 leading-relaxed">
+                    Use the fullscreen Table Editor to manage columns, foreign keys, indexes, and constraints. The right sidebar stays closed while editing.
+                  </p>
                 </div>
 
-                {/* Columns Attribute List */}
+                {/* Columns preview (edit via modal) */}
                 <div className="space-y-2">
                   <div className="flex justify-between items-center border-b border-white/[0.04] pb-1">
                     <span className="text-[10px] font-sans font-semibold tracking-wider text-white/65 uppercase [font-variant:all-small-caps]">Columns ({selectedAttrs.length})</span>
-                    <button 
-                      onClick={addAttr}
-                      className="text-[9px] text-[#4A90D9] font-bold bg-[#4A90D9]/5 hover:bg-[#4A90D9]/10 px-2 py-0.5 rounded transition-all"
-                    >
-                      + Add Field
-                    </button>
                   </div>
-
-                  <div className="space-y-1.5 max-h-[220px] overflow-y-auto pr-1 p-scrollbar">
+                  <div className="space-y-1 max-h-[140px] overflow-y-auto pr-1 p-scrollbar">
                     {selectedAttrs.length === 0 ? (
-                      <div className="text-xs text-white/30 italic py-2 text-center">No columns defined. Click Add Field above.</div>
+                      <div className="text-xs text-white/30 italic py-2 text-center">No columns defined.</div>
                     ) : (
                       selectedAttrs.map((attr, idx) => (
-                        <div key={idx} className="flex items-center gap-1.5 bg-white/[0.005] border border-white/[0.04] p-1.5 rounded-xl hover:bg-white/[0.02] transition-all">
-                          {editingAttr?.idx === idx && editingAttr.field === "name" ? (
-                            <input 
-                              type="text" 
-                              value={editValue} 
-                              onChange={e => setEditValue(e.target.value)}
-                              onBlur={() => { updateAttr(idx, "name", editValue); setEditingAttr(null); }}
-                              onKeyDown={e => e.key === 'Enter' && {}}
-                              autoFocus
-                              className="flex-1 bg-white/[0.06] border border-[#4A90D9]/30 rounded px-1.5 py-0.5 text-[11px] text-white font-mono outline-none" 
-                            />
-                          ) : (
-                            <span 
-                              onClick={() => { setEditingAttr({ idx, field: "name" }); setEditValue(attr.name); }}
-                              className="flex-1 text-[11px] text-white/70 font-mono cursor-pointer hover:text-white truncate"
-                            >
-                              {attr.name}
-                            </span>
-                          )}
-
-                          <select
-                            value={attr.type}
-                            onChange={e => updateAttr(idx, "type", e.target.value)}
-                            className="bg-[#050913] border border-white/[0.1] rounded px-1 py-0.5 text-[10px] text-white/70 font-mono outline-none"
-                          >
-                            {SQL_TYPES.map(t => (
-                              <option key={t} value={t}>{t}</option>
-                            ))}
-                          </select>
-
-                          {/* PK Toggle */}
-                          <button
-                            onClick={() => updateAttr(idx, "isPk", !attr.isPk)}
-                            className={`p-1 rounded transition-colors ${attr.isPk ? "text-yellow-400 bg-yellow-400/10" : "text-white/35 hover:text-white/65"}`}
-                          >
-                            <Key size={10} />
-                          </button>
-
-                          {/* Delete Field */}
-                          <button
-                            onClick={() => deleteAttr(idx)}
-                            className="p-1 rounded text-white/20 hover:text-red-400"
-                          >
-                            <Trash2 size={10} />
-                          </button>
+                        <div key={idx} className="flex items-center gap-2 bg-white/[0.005] border border-white/[0.04] px-2 py-1.5 rounded-lg">
+                          <span className="flex-1 text-[11px] text-white/70 font-mono truncate">{attr.name}</span>
+                          <span className="text-[10px] text-white/35 font-mono">{attr.type}</span>
+                          {attr.isPk && <Key size={10} className="text-yellow-400 shrink-0" />}
+                          {attr.isFk && <span className="text-[8px] text-[#4A90D9] font-bold">FK</span>}
                         </div>
                       ))
                     )}
                   </div>
                 </div>
 
-                {/* Relationship Suggestion */}
-                {relationshipSuggestion && (
-                  <div className="bg-indigo-500/10 border border-indigo-500/30 rounded-xl p-3 text-xs space-y-2 animate-in slide-in-from-top-2 duration-200">
-                    <div className="text-white/80 leading-relaxed">
-                      Detected column <span className="font-mono text-yellow-400 font-bold">{relationshipSuggestion.columnName}</span>. Connect to <span className="font-mono text-blue-400 font-bold">{nodes.find(n => n.id === relationshipSuggestion.targetNodeId)?.data.label as string}</span> table?
-                    </div>
-                    <div className="flex gap-2">
-                      <button 
-                        onClick={acceptRelationshipSuggestion}
-                        className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[10px] font-bold transition-all shadow-[0_2px_8px_rgba(79,70,229,0.3)]"
+                {/* Indexes preview */}
+                <div className="space-y-2 pt-2 border-t border-white/[0.04]">
+                  <div className="flex justify-between items-center pb-1">
+                    <span className="text-[10px] font-sans font-semibold tracking-wider text-white/65 uppercase [font-variant:all-small-caps]">
+                      Indexes ({((selectedNode.data.indexes as any[]) || []).length})
+                    </span>
+                    {onOpenTableEditor && (
+                      <button
+                        onClick={() => onOpenTableEditor(selectedNode.id)}
+                        className="text-[9px] text-[#4A90D9] font-bold hover:underline"
                       >
-                        Accept Suggestion
+                        + Edit Indexes
                       </button>
-                      <button 
-                        onClick={() => setRelationshipSuggestion(null)}
-                        className="px-2.5 py-1 bg-white/5 hover:bg-white/10 text-white/70 rounded text-[10px] transition-all"
-                      >
-                        Ignore
-                      </button>
-                    </div>
+                    )}
                   </div>
-                )}
+                  <div className="space-y-1 max-h-[120px] overflow-y-auto pr-1 p-scrollbar">
+                    {((selectedNode.data.indexes as any[]) || []).length === 0 ? (
+                      <div className="text-xs text-white/30 italic py-1">No indexes defined.</div>
+                    ) : (
+                      ((selectedNode.data.indexes as any[]) || []).map((idxItem: any, i: number) => (
+                        <div key={i} className="flex items-center justify-between bg-white/[0.005] border border-white/[0.04] px-2.5 py-1.5 rounded-lg text-[10px] font-mono text-white/70">
+                          <span className="truncate font-bold text-white/80">{idxItem.name}</span>
+                          <span className="text-white/40">{idxItem.type || 'btree'}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                {/* Constraints preview */}
+                <div className="space-y-2 pt-2 border-t border-white/[0.04]">
+                  <div className="flex justify-between items-center pb-1">
+                    <span className="text-[10px] font-sans font-semibold tracking-wider text-white/65 uppercase [font-variant:all-small-caps]">
+                      Constraints ({((selectedNode.data.constraints as any[]) || []).length})
+                    </span>
+                    {onOpenTableEditor && (
+                      <button
+                        onClick={() => onOpenTableEditor(selectedNode.id)}
+                        className="text-[9px] text-[#4A90D9] font-bold hover:underline"
+                      >
+                        + Edit Constraints
+                      </button>
+                    )}
+                  </div>
+                  <div className="space-y-1 max-h-[120px] overflow-y-auto pr-1 p-scrollbar">
+                    {((selectedNode.data.constraints as any[]) || []).length === 0 ? (
+                      <div className="text-xs text-white/30 italic py-1">No constraints defined.</div>
+                    ) : (
+                      ((selectedNode.data.constraints as any[]) || []).map((chk: any, i: number) => (
+                        <div key={i} className="flex items-center justify-between bg-white/[0.005] border border-white/[0.04] px-2.5 py-1.5 rounded-lg text-[10px] font-mono text-white/70">
+                          <span className="truncate font-bold text-white/80">{chk.name}</span>
+                          <span className="text-white/40">{chk.expression || chk.type || 'CHECK'}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
 
                 {/* === Table Color & Domain Group === */}
                 <div className="space-y-3 border-t border-white/[0.05] pt-3">
@@ -1523,8 +2064,17 @@ export function UnifiedSidebar({
             )}
           </div>
         )}
-
-        {/* SQL workspace has been moved to the left panel (SQLCodePanel) */}
+        {/* ==================== VIEWS TAB ==================== */}
+        {activeTab === "views" && (
+          <DiagramViewsPanel
+            nodes={nodes}
+            setNodes={setNodes}
+            edges={edges}
+            setEdges={setEdges}
+            takeSnapshot={takeSnapshot}
+            onFocusNode={onFocusNode}
+          />
+        )}
         
       </div>
     </div>

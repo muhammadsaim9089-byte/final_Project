@@ -4,13 +4,30 @@ import React, { createContext, useContext, useEffect, useRef, useState } from "r
 import type { ReactFlowInstance } from "@xyflow/react";
 import type { ParsedSchema } from "@/lib/sqlParser";
 
-type UnifiedSidebarToggleHandler = (tab?: "add" | "inspector") => void;
+type UnifiedSidebarToggleHandler = (tab?: "add" | "inspector" | "views") => void;
+
+export type CodeWindowMode = "split" | "fullscreen" | "collapsed";
+
+export type ProjectTab = {
+  id: string;
+  title: string;
+  nodes: any[];
+  edges: any[];
+  generatedSql: string;
+  generatedMermaid: string;
+};
 
 type LayoutContextType = {
   isSqlOpen: boolean;
   toggleSql: () => void;
   setSqlOpen: (open: boolean) => void;
+  codeWindowMode: CodeWindowMode;
+  setCodeWindowMode: (mode: CodeWindowMode) => void;
+  toggleCodeWindowFullscreen: () => void;
   sqlWidthVw: number;
+  panelWidth: number;
+  setPanelWidth: (w: number) => void;
+  rfInstance: ReactFlowInstance | null;
   registerRfInstance: (rf: ReactFlowInstance | null) => void;
   getRfNodes: () => any[];
   registerApplySqlHandler: (fn: (parsed: ParsedSchema) => void) => void;
@@ -23,7 +40,7 @@ type LayoutContextType = {
   registerToggleRelations: (fn: () => void) => void;
   registerToggleAiInsights: (fn: () => void) => void;
   // Triggerers used by nav
-  triggerToggleUnifiedSidebar: (tab?: "add" | "inspector") => void;
+  triggerToggleUnifiedSidebar: (tab?: "add" | "inspector" | "views") => void;
   triggerToggleDashboard: () => void;
   triggerToggleSqlSandbox: () => void;
   triggerToggleLayout: () => void;
@@ -34,14 +51,160 @@ type LayoutContextType = {
   setGeneratedSql: (s: string) => void;
   sqlActiveTab: "editor" | "import";
   setSqlActiveTab: (tab: "editor" | "import") => void;
+
+  // Project Tabs State
+  tabs: ProjectTab[];
+  activeTabId: string;
+  setActiveTabId: (id: string) => void;
+  setTabs: React.Dispatch<React.SetStateAction<ProjectTab[]>>;
+  updateActiveTab: (updates: Partial<ProjectTab>) => void;
+  addTab: (title?: string) => void;
+  closeTab: (id: string) => void;
+  updateTabTitle: (id: string, title: string) => void;
+
+  // Global Project Meta
+  projectTitle: string;
+  setProjectTitle: (t: string) => void;
+  currentProjectId: string | null;
+  setCurrentProjectId: (id: string | null) => void;
+  generatedMermaid: string;
+  setGeneratedMermaid: (m: string) => void;
+
+  // Grid state
+  showGrid: boolean;
+  setShowGrid: (show: boolean) => void;
 };
 
 const LayoutContext = createContext<LayoutContextType | null>(null);
 
 export function LayoutProvider({ children }: { children: React.ReactNode }) {
-  const [isSqlOpen, setIsSqlOpen] = useState(false);
+  const [codeWindowMode, setCodeWindowModeState] = useState<CodeWindowMode>("split");
+  const [isSqlOpen, setIsSqlOpenState] = useState(true);
+  const [panelWidth, setPanelWidth] = useState(35); // vw units
   const sqlWidthVw = 35; // 35% of viewport
 
+  // Project Tab states
+  const [tabs, setTabs] = useState<ProjectTab[]>([
+    {
+      id: "default",
+      title: "Untitled Schema",
+      nodes: [],
+      edges: [],
+      generatedSql: "",
+      generatedMermaid: "",
+    }
+  ]);
+  const [activeTabId, setActiveTabId] = useState<string>("default");
+
+  // Global project states
+  const [projectTitle, setProjectTitleState] = useState("Untitled Schema");
+  const [currentProjectId, setCurrentProjectIdState] = useState<string | null>(null);
+  const [generatedMermaid, setGeneratedMermaid] = useState("");
+  const [showGrid, setShowGrid] = useState(true);
+
+  // Sync active tab title with global projectTitle and ID
+  const setProjectTitle = (title: string) => {
+    setProjectTitleState(title);
+    updateTabTitle(activeTabId, title);
+  };
+
+  const setCurrentProjectId = (id: string | null) => {
+    setCurrentProjectIdState(id);
+    if (id) {
+      setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, id } : t));
+      setActiveTabId(id);
+    }
+  };
+
+  const updateTabTitle = (id: string, title: string) => {
+    setTabs(prev => prev.map(t => t.id === id ? { ...t, title } : t));
+  };
+
+  const updateActiveTab = (updates: Partial<ProjectTab>) => {
+    setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, ...updates } : t));
+  };
+
+  const addTab = (title = "Untitled Schema") => {
+    const newId = `new-${Date.now()}`;
+    const newTab: ProjectTab = {
+      id: newId,
+      title,
+      nodes: [],
+      edges: [],
+      generatedSql: "",
+      generatedMermaid: "",
+    };
+    setTabs(prev => [...prev, newTab]);
+    setActiveTabId(newId);
+    setProjectTitleState(title);
+    setCurrentProjectIdState(null);
+  };
+
+  const closeTab = (id: string) => {
+    setTabs(prev => {
+      const filtered = prev.filter(t => t.id !== id);
+      if (filtered.length === 0) {
+        // Always keep at least one tab
+        const defaultId = `new-${Date.now()}`;
+        return [{
+          id: defaultId,
+          title: "Untitled Schema",
+          nodes: [],
+          edges: [],
+          generatedSql: "",
+          generatedMermaid: "",
+        }];
+      }
+      return filtered;
+    });
+  };
+
+  // When active tab changes, sync global states
+  useEffect(() => {
+    const active = tabs.find(t => t.id === activeTabId);
+    if (active) {
+      setProjectTitleState(active.title);
+      // If it starts with "new-", it's unsaved, so currentProjectId is null
+      if (active.id.startsWith("new-") || active.id === "default") {
+        setCurrentProjectIdState(null);
+      } else {
+        setCurrentProjectIdState(active.id);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTabId]);
+
+  const setCodeWindowMode = (mode: CodeWindowMode) => {
+    setCodeWindowModeState(mode);
+    setIsSqlOpenState(mode !== "collapsed");
+  };
+
+  const setSqlOpen = (open: boolean) => {
+    setIsSqlOpenState(open);
+    if (open) {
+      if (codeWindowMode === "collapsed") setCodeWindowModeState("split");
+    } else {
+      setCodeWindowModeState("collapsed");
+    }
+  };
+
+  const toggleSql = () => {
+    if (codeWindowMode === "collapsed") {
+      setCodeWindowMode("split");
+    } else {
+      setCodeWindowMode("collapsed");
+    }
+  };
+
+  const toggleCodeWindowFullscreen = () => {
+    if (codeWindowMode === "fullscreen") {
+      setCodeWindowMode("split");
+    } else {
+      setCodeWindowMode("fullscreen");
+    }
+  };
+
+  const [rfInstance, setRfInstance] = useState<ReactFlowInstance | null>(null);
   const rfRef = useRef<ReactFlowInstance | null>(null);
   const applyHandlerRef = useRef<((p: ParsedSchema) => void) | null>(null);
 
@@ -58,6 +221,7 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
   // Register RF instance — used to call fitView on panel toggles
   const registerRfInstance = (rf: ReactFlowInstance | null) => {
     rfRef.current = rf;
+    setRfInstance(rf);
   };
 
   // Return nodes from registered ReactFlow instance (if available)
@@ -77,19 +241,12 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
   const applyParsedSchema = (parsed: ParsedSchema) => {
     if (applyHandlerRef.current) {
       applyHandlerRef.current(parsed);
-    } else {
-      // Fallback: store the generated SQL if handler not available
-      // (Canvas may not have registered yet)
-      // Keep generatedSql so user can copy it
-      // No-op otherwise
     }
   };
 
   useEffect(() => {
-    // Trigger a fitView when the SQL panel opens/closes so React Flow re-centers
     if (!rfRef.current) return;
     const rf = rfRef.current;
-    // Delay slightly to allow CSS transition to finish
     const t = setTimeout(() => {
       try {
         rf.fitView({ duration: 600, padding: 0.12 });
@@ -110,7 +267,7 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
   const registerToggleRelations = (fn: () => void) => { toggleRelationsRef.current = fn; };
   const registerToggleAiInsights = (fn: () => void) => { toggleAiRef.current = fn; };
 
-  const triggerToggleUnifiedSidebar = (tab?: "add" | "inspector") => {
+  const triggerToggleUnifiedSidebar = (tab?: "add" | "inspector" | "views") => {
     if (toggleUnifiedSidebarRef.current) toggleUnifiedSidebarRef.current(tab);
   };
   const triggerToggleDashboard = () => { if (toggleDashboardRef.current) toggleDashboardRef.current(); };
@@ -125,9 +282,15 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
     <LayoutContext.Provider
       value={{
         isSqlOpen,
-        toggleSql: () => setIsSqlOpen(v => !v),
-        setSqlOpen: setIsSqlOpen,
+        toggleSql,
+        setSqlOpen,
+        codeWindowMode,
+        setCodeWindowMode,
+        toggleCodeWindowFullscreen,
         sqlWidthVw,
+        panelWidth,
+        setPanelWidth,
+        rfInstance,
         registerRfInstance,
         getRfNodes,
         registerApplySqlHandler,
@@ -148,6 +311,28 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
         setGeneratedSql,
         sqlActiveTab,
         setSqlActiveTab,
+
+        // Project tabs
+        tabs,
+        activeTabId,
+        setActiveTabId,
+        setTabs,
+        updateActiveTab,
+        addTab,
+        closeTab,
+        updateTabTitle,
+
+        // Global project meta
+        projectTitle,
+        setProjectTitle,
+        currentProjectId,
+        setCurrentProjectId,
+        generatedMermaid,
+        setGeneratedMermaid,
+
+        // Grid
+        showGrid,
+        setShowGrid,
       }}
     >
       {children}
@@ -160,3 +345,4 @@ export function useLayout() {
   if (!ctx) throw new Error("useLayout must be used within LayoutProvider");
   return ctx;
 }
+

@@ -1,10 +1,8 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { cn } from "@/lib/utils";
 import { LayoutProvider } from "@/components/Layout/LayoutContext";
-import { NavigationSidebar } from "@/components/Layout/NavigationSidebar";
-import { SQLCodePanel } from "@/components/Layout/SQLCodePanel";
 import { ThemeProvider } from "@/components/ThemeProvider";
+import { AppLayout } from "@/components/Layout/AppLayout";
 
 export const metadata: Metadata = {
   title: "DesignDB | Ethereal Engine",
@@ -21,15 +19,12 @@ export default function RootLayout({
       <body className="antialiased bg-slate-950 dark:bg-[#001220] text-foreground overflow-x-hidden transition-colors duration-200" suppressHydrationWarning>
         <ThemeProvider attribute="class" defaultTheme="dark" disableTransitionOnChange>
           <LayoutProvider>
-            <NavigationSidebar />
-            <SQLCodePanel />
-            {/* Main application container — full height for canvas, auto for home */}
-            <div className="relative z-10 h-screen flex flex-col">
-              {children}
-            </div>
+            <AppLayout>{children}</AppLayout>
           </LayoutProvider>
         </ThemeProvider>
       </body>
     </html>
   );
 }
+
+

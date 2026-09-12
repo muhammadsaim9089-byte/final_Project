@@ -16,6 +16,7 @@ import {
   FileUp,
   X,
   ChevronRight,
+  ChevronLeft,
   Database,
   Table2,
   Keyboard,
@@ -330,7 +331,6 @@ export function SQLCodePanel() {
   const [copiedSql, setCopiedSql] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [panelWidth, setPanelWidth] = useState(35); // vw units
   const [cursorLine, setCursorLine] = useState(0);
   const [cursorCol, setCursorCol] = useState(0);
 
@@ -423,8 +423,8 @@ export function SQLCodePanel() {
     e.preventDefault();
     setIsDragging(true);
     dragStartX.current = e.clientX;
-    dragStartWidth.current = panelWidth;
-  }, [panelWidth]);
+    dragStartWidth.current = layout.panelWidth;
+  }, [layout.panelWidth]);
 
   useEffect(() => {
     if (!isDragging) return;
@@ -432,7 +432,7 @@ export function SQLCodePanel() {
       const delta = e.clientX - dragStartX.current;
       const vwDelta = (delta / window.innerWidth) * 100;
       const newWidth = Math.max(22, Math.min(60, dragStartWidth.current + vwDelta));
-      setPanelWidth(newWidth);
+      layout.setPanelWidth(newWidth);
     };
     const onUp = () => setIsDragging(false);
     document.addEventListener('mousemove', onMove);
@@ -694,43 +694,28 @@ export function SQLCodePanel() {
   const breadcrumb = useMemo(() => getBreadcrumb(currentText, cursorLine), [currentText, cursorLine]);
 
   // Panel positioning
-  const panelClasses = useMemo(() => {
-    return `fixed top-0 left-16 h-screen z-40 bg-[#060b12]/97 backdrop-blur-xl border-r border-white/[0.06] shadow-[0_20px_60px_rgba(0,0,0,0.8)] transition-[width,transform] duration-300 overflow-hidden flex flex-col ${layout.isSqlOpen ? 'translate-x-0' : '-translate-x-full w-0'}`;
-  }, [layout.isSqlOpen]);
+  const mode = layout.codeWindowMode;
+  const isVisible = mode !== "collapsed";
 
-  // SqlEditor component was moved outside to the top level.
-
-  return (
-    <div
-      ref={containerRef}
-      aria-hidden={!layout.isSqlOpen}
-      className={panelClasses}
-      style={{
-        width: layout.isSqlOpen ? `${panelWidth}vw` : '0',
-        minWidth: layout.isSqlOpen ? '360px' : '0',
-      }}
-      onDragOver={activeTab === 'import' ? handleDragOver : undefined}
-      onDragLeave={activeTab === 'import' ? handleDragLeave : undefined}
-      onDrop={activeTab === 'import' ? handleDrop : undefined}
-    >
-      {/* ─── RESIZE HANDLE (right edge) ─────────────────────────────────── */}
-      <div
-        className="resize-handle-h absolute top-0 right-0 w-[6px] h-full z-50 cursor-col-resize group"
-        onMouseDown={handleResizeStart}
+  // When collapsed, only render the edge tab
+  if (mode === "collapsed") {
+    return (
+      <button
+        onClick={() => layout.setCodeWindowMode("split")}
+        className="fixed top-16 left-0 z-50 w-6 h-11 bg-[#090d16] border border-l-0 border-white/[0.12] rounded-r-lg flex items-center justify-center cursor-pointer shadow-[4px_0_16px_rgba(0,0,0,0.6)] hover:bg-[#121926] text-white/80 hover:text-white transition-all group"
+        title="Open SQL Code Editor (>)"
       >
-        <div className={`absolute inset-y-0 right-0 w-[2px] transition-all duration-200 ${
-          isDragging ? 'bg-[#4A90D9] shadow-[0_0_8px_rgba(74,144,217,0.5)]' : 'bg-white/[0.06] group-hover:bg-[#4A90D9]/50'
-        }`} />
-        {/* Grip dots */}
-        <div className="absolute top-1/2 -translate-y-1/2 right-0 w-[6px] flex flex-col items-center gap-[3px] opacity-0 group-hover:opacity-60 transition-opacity">
-          <div className="w-[3px] h-[3px] rounded-full bg-white/40" />
-          <div className="w-[3px] h-[3px] rounded-full bg-white/40" />
-          <div className="w-[3px] h-[3px] rounded-full bg-white/40" />
-        </div>
-      </div>
+        <ChevronRight size={14} className="group-hover:translate-x-0.5 transition-transform text-[#4A90D9]" />
+      </button>
+    );
+  }
 
+
+  // Shared panel body content (used in both fullscreen and split modes)
+  const panelBody = (
+    <>
       {/* ─── HEADER ─────────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between px-4 pt-4 pb-2 shrink-0">
+      <div className="flex items-center justify-between px-4 pt-3 pb-2 shrink-0">
         <div className="flex items-center gap-2">
           <div className="p-1.5 rounded-lg bg-gradient-to-br from-[#4A90D9]/20 to-[#b38fff]/10 border border-[#4A90D9]/20">
             <FileCode2 size={14} className="text-[#4A90D9]" />
@@ -740,12 +725,22 @@ export function SQLCodePanel() {
             <span className="text-[9px] text-white/35 font-mono uppercase tracking-wider">Interactive DDL Editor</span>
           </div>
         </div>
-        <button
-          onClick={() => layout.setSqlOpen(false)}
-          className="p-1.5 text-white/40 hover:text-white hover:bg-white/[0.06] rounded-lg transition-all"
-        >
-          <X size={14} />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => layout.toggleCodeWindowFullscreen()}
+            className="p-1 text-white/40 hover:text-white hover:bg-white/[0.06] rounded-md text-[10px] font-mono font-bold transition-all px-2 border border-white/[0.06]"
+            title={mode === "fullscreen" ? "Exit Fullscreen" : "Fullscreen"}
+          >
+            {mode === "fullscreen" ? "Half" : "Full"}
+          </button>
+          <button
+            onClick={() => layout.setCodeWindowMode("collapsed")}
+            className="p-1.5 text-white/40 hover:text-white hover:bg-white/[0.06] rounded-lg transition-all"
+            title="Close panel"
+          >
+            <X size={14} />
+          </button>
+        </div>
       </div>
 
       {/* ─── TAB BAR ────────────────────────────────────────────────────── */}
@@ -932,139 +927,82 @@ export function SQLCodePanel() {
 
               {showReverseWizard && (
                 <div className="px-3 pb-3 space-y-3 border-t border-white/[0.04]">
-                  {/* Step Indicators */}
-                  <div className="flex items-center gap-2 pt-2.5">
-                    {[1, 2, 3].map((s) => (
-                      <div key={s} className="flex items-center gap-1.5">
-                        <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold transition-all ${
-                          wizardStep >= s ? 'bg-[#4A90D9] text-white' : 'bg-white/[0.06] text-white/30'
-                        }`}>{s}</div>
-                        {s < 3 && <div className={`w-6 h-[1px] ${wizardStep > s ? 'bg-[#4A90D9]' : 'bg-white/[0.06]'}`} />}
-                      </div>
-                    ))}
-                    <span className="ml-2 text-[9px] text-white/30 font-mono">
-                      {wizardStep === 1 ? 'Paste URL' : wizardStep === 2 ? 'Run Query' : 'Paste DDL'}
-                    </span>
-                  </div>
-
-                  {/* Step 1: Paste connection string */}
                   {wizardStep === 1 && (
-                    <div className="space-y-2">
+                    <div className="space-y-2 pt-2">
+                      <label className="text-[10px] text-white/40 font-mono uppercase tracking-wider">Connection String</label>
                       <input
-                        type="text"
                         value={connString}
-                        onChange={(e) => setConnString(e.target.value)}
-                        placeholder="postgres://user:pass@host:5432/dbname"
-                        className="w-full bg-white/[0.03] border border-white/[0.08] rounded-lg px-3 py-2 text-[11px] text-white/80 placeholder-white/25 outline-none focus:border-[#4A90D9]/40 font-mono transition-colors"
-                      />
-                      <button
-                        onClick={() => {
-                          const parsed = parseConnectionString(connString);
-                          if (parsed) { setParsedConn(parsed); setWizardStep(2); }
+                        onChange={(e) => {
+                          setConnString(e.target.value);
+                          setParsedConn(parseConnectionString(e.target.value));
                         }}
-                        disabled={!connString.trim()}
-                        className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#4A90D9]/15 border border-[#4A90D9]/30 text-[#4A90D9] text-[11px] font-bold hover:bg-[#4A90D9]/25 transition-all disabled:opacity-30"
-                      >
-                        <Server size={11} />
-                        Parse Connection
-                      </button>
-                      {connString.trim() && !parseConnectionString(connString) && (
-                        <p className="text-[10px] text-red-400/80 font-mono">
-                          Invalid format. Use: postgres://user:pass@host:port/db
-                        </p>
+                        placeholder="postgres://user:pass@host:5432/dbname"
+                        className="w-full bg-[#040810] border border-white/[0.08] rounded-lg px-3 py-2 text-[12px] text-white/80 font-mono outline-none focus:border-[#4A90D9]/40 placeholder:text-white/20 transition-colors"
+                      />
+                      {connString && !parsedConn && (
+                        <p className="text-[10px] text-red-400 flex items-center gap-1"><AlertTriangle size={10} /> Invalid format. Use: postgres://user:pass@host:port/db</p>
                       )}
+                      {parsedConn && (
+                        <div className="bg-white/[0.02] rounded-lg p-2 space-y-1 text-[10px] font-mono">
+                          <div className="flex items-center gap-2"><Server size={9} className="text-[#4A90D9]" /><span className="text-white/40">Type:</span><span className="text-white/70">{parsedConn.protocol}</span></div>
+                          <div className="flex items-center gap-2"><span className="text-white/40 ml-[17px]">Host:</span><span className="text-white/70">{parsedConn.host}:{parsedConn.port}</span></div>
+                          <div className="flex items-center gap-2"><span className="text-white/40 ml-[17px]">DB:</span><span className="text-white/70">{parsedConn.database}</span></div>
+                        </div>
+                      )}
+                      <button
+                        disabled={!parsedConn}
+                        onClick={() => setWizardStep(2)}
+                        className="w-full px-3 py-2 rounded-lg bg-gradient-to-r from-[#4A90D9] to-[#2d6db5] text-white text-[11px] font-bold disabled:opacity-30 transition-all"
+                      >
+                        Next: Get Extraction Query →
+                      </button>
                     </div>
                   )}
 
-                  {/* Step 2: Show parsed details & extraction query */}
                   {wizardStep === 2 && parsedConn && (
-                    <div className="space-y-2.5">
-                      <div className="grid grid-cols-2 gap-1.5">
-                        {[
-                          { label: 'Protocol', value: parsedConn.protocol },
-                          { label: 'Host', value: parsedConn.host },
-                          { label: 'Port', value: parsedConn.port },
-                          { label: 'Database', value: parsedConn.database },
-                          { label: 'User', value: parsedConn.user },
-                          { label: 'Password', value: '••••••••' },
-                        ].map((item) => (
-                          <div key={item.label} className="bg-white/[0.02] border border-white/[0.04] rounded-lg px-2.5 py-1.5">
-                            <span className="text-[8px] text-white/30 uppercase font-mono block">{item.label}</span>
-                            <span className="text-[10px] text-white/70 font-mono truncate block">{item.value}</span>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="bg-[#0A0E1A] border border-white/[0.06] rounded-lg p-2.5 text-[10px] text-white/50 font-mono max-h-[100px] overflow-y-auto whitespace-pre-wrap">
-                        {getExtractionQuery(parsedConn)}
-                      </div>
-                      <div className="flex gap-2">
+                    <div className="space-y-2 pt-2">
+                      <label className="text-[10px] text-white/40 font-mono uppercase tracking-wider">Run this query on your {parsedConn.protocol} database:</label>
+                      <div className="relative">
+                        <pre className="bg-[#040810] border border-white/[0.08] rounded-lg p-3 text-[10px] text-white/70 font-mono overflow-x-auto max-h-32 whitespace-pre-wrap">
+                          {getExtractionQuery(parsedConn)}
+                        </pre>
                         <button
                           onClick={() => {
-                            navigator.clipboard.writeText(getExtractionQuery(parsedConn).replace(/\\n/g, '\n'));
+                            navigator.clipboard.writeText(getExtractionQuery(parsedConn));
                             setCopiedQuery(true);
                             setTimeout(() => setCopiedQuery(false), 2000);
                           }}
-                          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.08] text-white/60 text-[10px] font-bold hover:bg-white/[0.08] transition-all"
+                          className="absolute top-2 right-2 p-1.5 rounded-md bg-white/[0.05] hover:bg-white/[0.1] transition-all"
                         >
-                          {copiedQuery ? <Check size={10} /> : <ClipboardCopy size={10} />}
-                          {copiedQuery ? 'Copied!' : 'Copy Query'}
+                          {copiedQuery ? <Check size={10} className="text-[#9be7a6]" /> : <ClipboardCopy size={10} className="text-white/50" />}
                         </button>
-                        <button
-                          onClick={() => setWizardStep(3)}
-                          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#4A90D9]/15 border border-[#4A90D9]/30 text-[#4A90D9] text-[10px] font-bold hover:bg-[#4A90D9]/25 transition-all"
-                        >
-                          Next: Paste Output →
-                        </button>
+                      </div>
+                      <div className="flex gap-2">
+                        <button onClick={() => setWizardStep(1)} className="px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.06] text-white/60 text-[11px] font-medium hover:bg-white/[0.08] transition-all">← Back</button>
+                        <button onClick={() => setWizardStep(3)} className="flex-1 px-3 py-1.5 rounded-lg bg-gradient-to-r from-[#4A90D9] to-[#2d6db5] text-white text-[11px] font-bold transition-all">Next: Paste Results →</button>
                       </div>
                     </div>
                   )}
 
-                  {/* Step 3: Instructions to paste DDL output below */}
                   {wizardStep === 3 && (
-                    <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-lg p-2.5 text-[10px] text-emerald-300/80 font-sans leading-relaxed">
-                      <p className="font-bold mb-1">✓ Query copied! Now:</p>
-                      <ol className="list-decimal list-inside space-y-0.5 text-emerald-300/60">
-                        <li>Run the query on your database client (psql, pgAdmin, MySQL Workbench...)</li>
-                        <li>Copy the CREATE TABLE output</li>
-                        <li>Paste it into the SQL editor below</li>
-                        <li>Click <strong className="text-emerald-300/90">Import & Build</strong> to generate the visual schema</li>
-                      </ol>
-                      <button
-                        onClick={() => { setShowReverseWizard(false); setWizardStep(1); setConnString(''); setParsedConn(null); }}
-                        className="mt-2 text-[9px] text-white/30 hover:text-white/50 underline transition-colors"
-                      >
-                        Done — Close wizard
-                      </button>
+                    <div className="space-y-2 pt-2">
+                      <label className="text-[10px] text-white/40 font-mono uppercase tracking-wider">Paste the query output (CREATE TABLE statements):</label>
+                      <p className="text-[10px] text-white/30">Paste the DDL output from your database tool here, then click Import & Build.</p>
+                      <div className="flex gap-2">
+                        <button onClick={() => setWizardStep(2)} className="px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.06] text-white/60 text-[11px] font-medium hover:bg-white/[0.08] transition-all">← Back</button>
+                      </div>
                     </div>
                   )}
                 </div>
               )}
             </div>
 
-            {/* Drag-and-drop zone indicator */}
-            {isDragOver && (
-              <div className="absolute inset-4 z-30 rounded-2xl border-2 border-dashed border-[#4A90D9]/50 bg-[#4A90D9]/5 flex items-center justify-center pointer-events-none animate-pulse">
-                <div className="flex flex-col items-center gap-2 text-[#4A90D9]">
-                  <Upload size={32} className="animate-bounce" />
-                  <span className="text-sm font-semibold">Drop .sql file here</span>
-                </div>
-              </div>
-            )}
-
-            {/* IDE editor for import */}
+            {/* Import SQL editor */}
             <SqlEditor
               value={importText}
               onChange={setImportText}
               textareaRef={importTextareaRef}
-              placeholder={
-                importDialect === 'prisma'
-                  ? "// Paste your Prisma schema here\n// Example:\n// model User {\n//   id    Int    @id @default(autoincrement())\n//   email String @unique\n//   posts Post[]\n// }\n// model Post {\n//   id       Int  @id\n//   title    String\n//   authorId Int\n//   author   User @relation(fields: [authorId], references: [id])\n// }"
-                : importDialect === 'django'
-                  ? "# Paste your Django models.py here\n# Example:\n# class User(models.Model):\n#     username = models.CharField(max_length=255)\n#     email = models.EmailField()\n#\n# class Post(models.Model):\n#     title = models.CharField(max_length=200)\n#     author = models.ForeignKey(User, on_delete=models.CASCADE)"
-                : importDialect === 'rails'
-                  ? '# Paste your Rails schema.rb here\n# Example:\n# create_table "users", force: :cascade do |t|\n#   t.string "username"\n#   t.string "email"\n# end\n#\n# create_table "posts", force: :cascade do |t|\n#   t.string "title"\n#   t.integer "user_id"\n# end\n# add_foreign_key "posts", "users"'
-                  : "-- Paste or drop your CREATE TABLE SQL here\n-- Example:\n-- CREATE TABLE orders (\n--   id SERIAL PRIMARY KEY,\n--   customer_id INTEGER REFERENCES customers(id),\n--   total DECIMAL(10,2)\n-- );"
-              }
+              placeholder={`-- Paste your ${importDialect === 'sql' ? 'SQL DDL' : importDialect} schema here...\n-- Or drag & drop a file`}
               isImport={true}
               isValidSql={isValidSql}
               errorLines={errorLines}
@@ -1155,6 +1093,65 @@ export function SQLCodePanel() {
           </span>
         </div>
       </div>
+    </>
+  );
+
+  // ─── FULLSCREEN MODE: fixed overlay covering everything ──────────────────
+  if (mode === "fullscreen") {
+    return (
+      <div
+        ref={containerRef}
+        className="fixed inset-0 top-[80px] z-40 bg-[#060b12]/98 backdrop-blur-xl border-r border-white/[0.08] shadow-[0_20px_60px_rgba(0,0,0,0.8)] flex flex-col"
+        onDragOver={activeTab === 'import' ? handleDragOver : undefined}
+        onDragLeave={activeTab === 'import' ? handleDragLeave : undefined}
+        onDrop={activeTab === 'import' ? handleDrop : undefined}
+      >
+        {panelBody}
+      </div>
+    );
+  }
+
+  // ─── SPLIT MODE: flex-based panel that pushes the canvas ────────────────
+  return (
+    <div
+      ref={containerRef}
+      className="relative h-full shrink-0 bg-[#060b12]/98 backdrop-blur-xl border-r border-white/[0.08] shadow-[0_20px_60px_rgba(0,0,0,0.8)] flex flex-col overflow-hidden"
+      style={{
+        width: `${layout.panelWidth}vw`,
+        minWidth: '360px',
+        maxWidth: '60vw',
+      }}
+      onDragOver={activeTab === 'import' ? handleDragOver : undefined}
+      onDragLeave={activeTab === 'import' ? handleDragLeave : undefined}
+      onDrop={activeTab === 'import' ? handleDrop : undefined}
+    >
+      {/* ─── PROTRUDING CHEVRON TAB (Right Edge Handle) ───────────────── */}
+      <div
+        onClick={() => layout.toggleCodeWindowFullscreen()}
+        className="absolute top-4 right-[-24px] z-50 w-6 h-11 bg-[#090d16] border border-l-0 border-white/[0.12] rounded-r-lg flex items-center justify-center cursor-pointer shadow-[4px_0_16px_rgba(0,0,0,0.6)] hover:bg-[#121926] text-white/80 hover:text-white transition-all group"
+        title="Make Full Screen (>)"
+      >
+        <ChevronRight size={14} className="group-hover:translate-x-0.5 transition-transform text-[#4A90D9]" />
+      </div>
+
+      {/* ─── RESIZE HANDLE (right edge) ─────────────────────────────────── */}
+      <div
+        className="resize-handle-h absolute top-0 right-0 w-[6px] h-full z-50 cursor-col-resize group"
+        onMouseDown={handleResizeStart}
+      >
+        <div className={`absolute inset-y-0 right-0 w-[2px] transition-all duration-200 ${
+          isDragging ? 'bg-[#4A90D9] shadow-[0_0_8px_rgba(74,144,217,0.5)]' : 'bg-white/[0.06] group-hover:bg-[#4A90D9]/50'
+        }`} />
+        {/* Grip dots */}
+        <div className="absolute top-1/2 -translate-y-1/2 right-0 w-[6px] flex flex-col items-center gap-[3px] opacity-0 group-hover:opacity-60 transition-opacity">
+          <div className="w-[3px] h-[3px] rounded-full bg-white/40" />
+          <div className="w-[3px] h-[3px] rounded-full bg-white/40" />
+          <div className="w-[3px] h-[3px] rounded-full bg-white/40" />
+        </div>
+      </div>
+
+      {panelBody}
     </div>
   );
 }
+

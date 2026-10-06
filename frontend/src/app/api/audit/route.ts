@@ -1,10 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { normalizeTo3NF } from '@/lib/execution/normalize_schema';
 import { validateSchema } from '@/lib/execution/utils/schema_validator';
+import { withRateLimit } from "@/lib/server/rateLimit";
+import { cacheKey, caches, hashKey, memoResponse } from "@/lib/server/cache";
 
-export async function POST(req: NextRequest) {
+// deterministic: successful results are cached by request body (30 min; X-Cache: HIT)
+export const POST = withRateLimit("read", async (req: NextRequest) => {
+  const text = await req.text();
+  return memoResponse(caches.compute, cacheKey.audit(hashKey(text)), () => audit(text));
+});
+
+async function audit(text: string): Promise<Response> {
   try {
-    const { schema, strictMode } = await req.json();
+    const { schema, strictMode } = JSON.parse(text);
 
     if (!schema) {
       return NextResponse.json({ error: 'Schema is required' }, { status: 400 });

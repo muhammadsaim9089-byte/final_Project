@@ -21,6 +21,25 @@ model Project {
   rawPrompt   String?
   nodesJson   String
   edgesJson   String
+  // Schema-level metadata: enums, table-group styling, diagram views, project settings.
+  metaJson    String   @default("{}")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+}
+
+// Published, link-addressable snapshot of a diagram (public / password-protected / private).
+model SharedDiagram {
+  id           String   @id @default(cuid())
+  slug         String   @unique
+  title        String
+  dbml         String
+  layoutJson   String   @default("{}")
+  visibility   String   @default("public") // public | password | private
+  passwordHash String?
+  passwordSalt String?
+  // sha256 of the secret returned once at publish time; needed to update or unpublish
+  editTokenHash String?
+  views        Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 }

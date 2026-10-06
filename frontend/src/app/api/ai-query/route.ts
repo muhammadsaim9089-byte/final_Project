@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Groq from 'groq-sdk';
+import { withRateLimit } from "@/lib/server/rateLimit";
+import { upstreamAiBusy } from "@/lib/server/aiErrors";
 
-export async function POST(req: NextRequest) {
+export const POST = withRateLimit("ai", async (req: NextRequest) => {
   try {
     const { prompt, tables } = await req.json();
 
@@ -23,6 +25,7 @@ export async function POST(req: NextRequest) {
     let schemaContext = "";
     if (tables && typeof tables === 'object') {
       schemaContext = Object.entries(tables)
+        .filter(([, cols]) => Array.isArray(cols)) // a malformed entry is left out, not a failed request
         .map(([tableName, cols]: [string, any]) => {
           const colList = (cols as { name: string; type: string }[])
             .map(c => `  ${c.name} ${c.type}`)
@@ -66,10 +69,12 @@ ${schemaContext || 'No schema available.'}`;
 
     return NextResponse.json({ query: cleanQuery });
   } catch (error: any) {
+    const busy = upstreamAiBusy(error);
+    if (busy) return busy;
     console.error('AI Query Generation Error:', error);
     return NextResponse.json(
       { error: error.message || 'Failed to generate query' },
       { status: 500 }
     );
   }
-}
+});

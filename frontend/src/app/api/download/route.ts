@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withRateLimit } from "@/lib/server/rateLimit";
 
 export const dynamic = "force-dynamic";
 
-export async function POST(req: NextRequest) {
+export const POST = withRateLimit("read", async (req: NextRequest) => {
   const { content, filename, mimeType } = await req.json();
 
   if (!content || !filename) {
@@ -19,4 +20,4 @@ export async function POST(req: NextRequest) {
       "Content-Length": buffer.byteLength.toString(),
     },
   });
-}
+});

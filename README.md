@@ -26,6 +26,7 @@
 - **Instant Diagram Generation**: Automatically creates beautiful, interactive Mermaid.js ER diagrams from the normalized schema.
 - **Multi-Dialect SQL Export**: Generates `CREATE TABLE` scripts tailored for PostgreSQL, MySQL, and SQLite.
 - **Cloud Integrations**: Supports diagram rendering via Eraser.io and Mermaid Live Editor API.
+- **Full diagram editor (dbdiagram.io + ERDLab feature set, free)**: two-way DBML editor, 9 SQL dialects, table groups, diagram views, data lineage, version history with diff, password-protected share links / embeds / published pages, reverse engineering, database conversion, documentation and image/PDF export, 28 templates. See **[docs/FEATURES.md](docs/FEATURES.md)** for the full feature map (multi-user collaboration is intentionally not included). Run the checks with `cd frontend && npm test`.
 
 ## 🏗️ The 3-Layer Architecture
 

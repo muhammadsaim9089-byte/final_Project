@@ -1,510 +1,604 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Edge, Node } from "@xyflow/react";
+import { AlertTriangle, ArrowLeft, Check, Database, Loader2, Maximize2, Minimize2, PanelLeftClose, PanelLeftOpen, Play, RotateCcw, Square, X } from "lucide-react";
 import { useLayout } from "@/components/Layout/LayoutContext";
-import { Play, RotateCcw, AlertTriangle, CheckCircle, Database, Table, HelpCircle, Loader2, Sparkles } from "lucide-react";
-import { Node } from "@xyflow/react";
+import { canvasToModel, isTableNode } from "@/lib/model/canvasAdapter";
+import type { DiagramModel, ProjectMeta } from "@/lib/model/types";
+import { databaseSignature, playgroundTables, type BuildReport, type PlaygroundTable } from "@/lib/sandbox/engine";
+import { SqlEditor, type SqlEditorHandle } from "./sandbox/SqlEditor";
+import { SchemaTree } from "./sandbox/SchemaTree";
+import { ResultsPanel, type RunView } from "./sandbox/ResultsPanel";
+import { CancelledError, startPlaygroundRuntime, type PlaygroundRuntime } from "./sandbox/runtime";
 
 interface SqlSandboxProps {
-  nodes?: Node[];
+  nodes: Node[];
+  edges: Edge[];
   isOpen: boolean;
   onClose: () => void;
-  embedded?: boolean;
 }
 
-interface ColumnInfo {
-  name: string;
-  type: string;
+/** Stage 1: docked under the canvas (which shrinks to make room). Stage 2: the full-screen, three-pane IDE. */
+type Mode = "docked" | "full";
+
+const DOCK_HEIGHT_KEY = "designdb.playground.dockHeight";
+const MIN_DOCK = 200;
+/** What the docked panel always leaves above itself: the navbar plus a usable strip of canvas. */
+const KEEP_ABOVE_DOCK = 300;
+const TREE_W = { docked: 232, full: 272 };
+
+const viewportH = () => (typeof window !== "undefined" ? window.innerHeight : 900);
+const clampDock = (h: number) => Math.round(Math.max(MIN_DOCK, Math.min(h, viewportH() - KEEP_ABOVE_DOCK)));
+const defaultDock = () => clampDock(viewportH() * 0.35);
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/**
+ * The diagram as a DiagramModel, rebuilt only when something the database is built from changes — table data,
+ * relationships, enums. Dragging or selecting never rebuilds it: React Flow keeps `node.data` / `edge.data` identical for
+ * those, so the comparison is a cheap reference check and the playground costs the canvas nothing while you work.
+ */
+function useLiveModel(nodes: Node[], edges: Edge[], meta: ProjectMeta, active: boolean): DiagramModel | null {
+  const cache = useRef<{ parts: unknown[]; model: DiagramModel | null }>({ parts: [], model: null });
+  if (active) {
+    const parts: unknown[] = [meta.enums, meta.project];
+    for (const n of nodes) if (isTableNode(n)) parts.push(n.id, n.data);
+    for (const e of edges) parts.push(e.id, e.source, e.target, e.sourceHandle, e.targetHandle, e.type, e.data);
+    const prev = cache.current;
+    if (!prev.model || prev.parts.length !== parts.length || parts.some((p, i) => p !== prev.parts[i])) cache.current = { parts, model: canvasToModel(nodes, edges, meta) };
+  }
+  return cache.current.model;
 }
 
-interface QueryResult {
-  columns: string[];
-  rows: any[][];
-  affectedRows?: number;
+/** The first thing in a fresh editor: a SELECT on the first table and, when the diagram has one, a JOIN along a relationship. */
+function starterQuery(tables: PlaygroundTable[]): string {
+  const first = tables.find((t) => !t.junction) ?? tables[0];
+  if (!first) return "-- Add tables to your diagram, then Re-sync schema.\n";
+  const lines = ["-- SQLite, in your browser, seeded with sample rows from your diagram.", "-- Ctrl/⌘ + Enter runs every statement — or just the ones you select.", "", `SELECT * FROM ${first.sqlName} LIMIT 10;`];
+  // a relationship between two drawn tables reads better than one through a junction table
+  for (const child of [...tables.filter((t) => !t.junction), ...tables.filter((t) => t.junction)]) {
+    const fk = child.columns.find((c) => c.ref);
+    const parent = fk?.ref && tables.find((t) => t.label === fk.ref!.table);
+    if (fk && parent && parent !== child) {
+      lines.push("", `SELECT *`, `FROM ${child.sqlName} AS c`, `JOIN ${parent.sqlName} AS p ON p.${fk.ref!.column} = c.${fk.name}`, `LIMIT 10;`);
+      break;
+    }
+  }
+  return lines.join("\n") + "\n";
 }
 
-export function SqlSandbox({ nodes, isOpen, onClose, embedded = false }: SqlSandboxProps) {
+const iconBtn = "h-7 min-w-7 px-1.5 flex items-center justify-center gap-1.5 rounded-md text-white/55 hover:text-white hover:bg-white/[0.07] transition-colors text-[11.5px] font-semibold disabled:opacity-40";
+
+/**
+ * Live SQL playground: SQLite (WebAssembly, in a Web Worker) seeded from the diagram.
+ *
+ * One mounted tree serves both stages — only CSS changes between docked and full-screen — so the editor keeps its text,
+ * cursor, selection, undo history and scroll position across every switch, and across closing and reopening.
+ */
+export const SqlSandbox = memo(function SqlSandbox({ nodes, edges, isOpen, onClose }: SqlSandboxProps) {
   const layout = useLayout();
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState<QueryResult | null>(null);
-  const [statusMessage, setStatusMessage] = useState<string>("");
-  const [errorMessage, setErrorMessage] = useState<string>("");
-  const [tablesList, setTablesList] = useState<Record<string, ColumnInfo[]>>({});
-  const [isLoading, setIsLoading] = useState(false);
-  const [dbReady, setDbReady] = useState(false);
-  const [execTime, setExecTime] = useState<number | null>(null);
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
-  // AI Query Generator state
-  const [aiPrompt, setAiPrompt] = useState("");
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiError, setAiError] = useState("");
+  // nothing (no editor, no WebAssembly) until the playground is first opened; afterwards it stays mounted, just hidden
+  const [everOpened, setEverOpened] = useState(isOpen);
+  useEffect(() => {
+    if (isOpen) setEverOpened(true);
+  }, [isOpen]);
 
-  // Hold reference to the sql.js DB instance
-  const dbRef = useRef<any>(null);
-  const sqlRef = useRef<any>(null);
+  const model = useLiveModel(nodes, edges, layout.meta, isOpen);
+  const tables = useMemo(() => (model ? playgroundTables(model) : []), [model]);
+  const liveSig = useMemo(() => (model ? databaseSignature(model) : ""), [model]);
+  const modelRef = useRef(model);
+  modelRef.current = model;
 
-  // Load sql.js from the public directory
-  const loadSqlJs = useCallback(async () => {
-    if (sqlRef.current) return; // already loaded
+  const [mode, setMode] = useState<Mode>("docked");
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
 
+  // ── engine ──
+  const runtimeRef = useRef<PlaygroundRuntime | null>(null);
+  const alive = useRef(true);
+  const [engine, setEngine] = useState<"idle" | "starting" | "ready" | "failed">("idle");
+  const [engineError, setEngineError] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [built, setBuilt] = useState<{ sig: string; keys: Set<string>; report: BuildReport } | null>(null);
+  const editorRef = useRef<SqlEditorHandle>(null);
+
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      runtimeRef.current?.dispose();
+      runtimeRef.current = null;
+    };
+  }, []);
+
+  const markBuilt = useCallback((m: DiagramModel, report: BuildReport) => {
+    const keys = new Set<string>();
+    for (const t of playgroundTables(m)) {
+      keys.add(t.key);
+      for (const c of t.columns) keys.add(`${t.key}.${c.name}`);
+    }
+    setBuilt({ sig: databaseSignature(m), keys, report });
+  }, []);
+
+  const start = useCallback(async () => {
+    const m = modelRef.current;
+    if (!m) return;
+    setEngine("starting");
+    setEngineError(null);
+    runtimeRef.current?.dispose();
+    runtimeRef.current = null;
     try {
-      // Dynamically import sql.js from public dir via script tag approach
-      await new Promise<void>((resolve, reject) => {
-        if ((window as any).initSqlJs) {
-          resolve();
-          return;
-        }
-        const script = document.createElement("script");
-        script.src = "/sql-wasm.js";
-        script.onload = () => resolve();
-        script.onerror = () => reject(new Error("Failed to load sql-wasm.js"));
-        document.head.appendChild(script);
-      });
+      const { runtime, report } = await startPlaygroundRuntime(m);
+      if (!alive.current) return runtime.dispose();
+      runtimeRef.current = runtime;
+      markBuilt(m, report);
+      setEngine("ready");
+      const ed = editorRef.current;
+      if (ed && ed.isPristine() && !ed.getText().trim()) ed.setText(starterQuery(playgroundTables(m)));
+    } catch (e) {
+      if (!alive.current) return;
+      setEngine("failed");
+      setEngineError(errorText(e));
+    }
+  }, [markBuilt]);
 
-      const SQL = await (window as any).initSqlJs({
-        locateFile: () => "/sql-wasm.wasm",
-      });
+  useEffect(() => {
+    if (isOpen && engine === "idle" && model) void start();
+  }, [isOpen, engine, model, start]);
 
-      sqlRef.current = SQL;
-    } catch (err: any) {
-      setErrorMessage(`Failed to load SQLite engine: ${err.message}`);
+  // ── running queries ──
+  const [run, setRun] = useState<RunView>({ phase: "idle" });
+  const [activeResult, setActiveResult] = useState(0);
+  const [hasSelection, setHasSelection] = useState(false);
+  const runToken = useRef(0);
+  const lastError = useRef<{ from: number; to: number } | null>(null);
+
+  /** `offset` is where `text` sits in the editor (null: not from the editor, e.g. a preview — errors aren't marked). */
+  const execute = useCallback(async (text: string, offset: number | null, source?: string) => {
+    const rt = runtimeRef.current;
+    if (!rt || !text.trim()) return;
+    const token = ++runToken.current;
+    editorRef.current?.clearError();
+    lastError.current = null;
+    setRun((r) => ({ phase: "running", source, startedAt: performance.now(), outcome: r.outcome }));
+    try {
+      const outcome = await rt.run(text, offset ?? 0);
+      if (token !== runToken.current) return;
+      let errorLine: number | undefined;
+      if (outcome.error && offset !== null && editorRef.current) {
+        editorRef.current.showError(outcome.error.from, outcome.error.to, outcome.error.message);
+        errorLine = editorRef.current.lineAt(outcome.error.from);
+        lastError.current = { from: outcome.error.from, to: outcome.error.to };
+      }
+      setActiveResult(Math.max(0, outcome.resultSets.length - 1));
+      setRun({ phase: "done", outcome, source, errorLine });
+    } catch (e) {
+      if (token !== runToken.current) return;
+      setRun(e instanceof CancelledError ? { phase: "cancelled", source } : { phase: "done", source, failure: errorText(e) });
     }
   }, []);
 
-  // Build SQL DDL and seed data from canvas nodes, then create an in-memory SQLite DB
-  const buildDatabase = useCallback(async () => {
-    if (!sqlRef.current) return;
+  const runEditor = useCallback(() => {
+    const ed = editorRef.current;
+    if (!ed) return;
+    const sel = ed.getSelection();
+    if (sel && sel.text.trim()) void execute(sel.text, sel.from, "Selection");
+    else void execute(ed.getText(), 0);
+  }, [execute]);
 
-    setIsLoading(true);
-    setErrorMessage("");
-    setStatusMessage("");
-    setResults(null);
+  const preview = useCallback((t: PlaygroundTable) => void execute(`SELECT * FROM ${t.sqlName} LIMIT 100;`, null, `Preview · ${t.label}`), [execute]);
+  const insert = useCallback((text: string) => editorRef.current?.insert(text), []);
+  const showError = useCallback(() => {
+    if (lastError.current) editorRef.current?.select(lastError.current.from, lastError.current.to);
+  }, []);
+  const locate = useCallback((t: PlaygroundTable) => {
+    setMode("docked"); // the canvas has to be visible
+    layoutRef.current.getCanvasApi()?.focusTable(t.key);
+  }, []);
 
+  /** Stop: abandon the running query by restarting the worker, and rebuild the database from the diagram. */
+  const stop = useCallback(async () => {
+    const rt = runtimeRef.current;
+    const m = modelRef.current;
+    if (!rt || !m) return;
+    runToken.current++;
+    setRun({ phase: "cancelled" });
+    setSyncing(true);
     try {
-      // Create fresh in-memory database
-      const db = new sqlRef.current.Database();
-      dbRef.current = db;
-
-      const schemaMap: Record<string, ColumnInfo[]> = {};
-
-      // Determine which nodes to use: prefer prop, otherwise read from layout's RF instance
-      const nodesToUse: Node[] = nodes && nodes.length > 0 ? nodes : (layout?.getRfNodes ? layout.getRfNodes() : []);
-
-      // 1. CREATE TABLE for each node
-      for (const node of nodesToUse) {
-        const tableName = (node.data.label as string).replace(/\s+/g, "_");
-        const attrs = (node.data.attributes as any[]) || [];
-        if (attrs.length === 0) continue;
-
-        schemaMap[tableName] = attrs.map((a: any) => ({ name: a.name, type: a.type }));
-
-        const colDefs = attrs.map((a: any) => {
-          let colDef = `${a.name} ${mapType(a.type)}`;
-          if (a.isPk) colDef += " PRIMARY KEY";
-          return colDef;
-        }).join(", ");
-
-        db.run(`CREATE TABLE IF NOT EXISTS ${tableName} (${colDefs});`);
+      markBuilt(m, await rt.restart(m));
+    } catch (e) {
+      if (!(e instanceof CancelledError)) {
+        setEngine("failed");
+        setEngineError(errorText(e));
       }
-
-      // 2. Seed sample data
-      for (const node of nodesToUse) {
-        const tableName = (node.data.label as string).replace(/\s+/g, "_");
-        const attrs = (node.data.attributes as any[]) || [];
-        if (attrs.length === 0) continue;
-
-        for (let i = 1; i <= 5; i++) {
-          const cols = attrs.map((a: any) => a.name).join(", ");
-          const vals = attrs.map((a: any) => generateSeedValue(a, i, tableName)).join(", ");
-          try {
-            db.run(`INSERT INTO ${tableName} (${cols}) VALUES (${vals});`);
-          } catch {
-            // Silently skip seed errors (e.g. PK conflicts)
-          }
-        }
-      }
-
-      setTablesList(schemaMap);
-
-      // Set default query to first table
-      const firstTable = Object.keys(schemaMap)[0];
-      if (firstTable) {
-        setQuery(`-- Full SQLite engine — all SQL is supported!\nSELECT * FROM ${firstTable} LIMIT 10;`);
-      } else {
-        setQuery("-- Add tables on the canvas first, then Re-Sync Schema.");
-      }
-
-      setDbReady(true);
-      setStatusMessage(`SQLite database initialized with ${Object.keys(schemaMap).length} table(s) and sample data.`);
-    } catch (err: any) {
-      setErrorMessage(`Database init error: ${err.message}`);
     } finally {
-      setIsLoading(false);
+      setSyncing(false);
     }
-  }, [nodes]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [markBuilt]);
 
-  // Map DesignDB attribute types to SQLite affinity types
-  function mapType(type: string): string {
-    const t = type.toLowerCase();
-    if (t.includes("int") || t.includes("serial")) return "INTEGER";
-    if (t.includes("float") || t.includes("decimal") || t.includes("numeric")) return "REAL";
-    if (t.includes("bool")) return "INTEGER"; // SQLite has no BOOLEAN
-    if (t.includes("date") || t.includes("timestamp")) return "TEXT";
-    return "TEXT";
-  }
+  const resync = useCallback(async () => {
+    const rt = runtimeRef.current;
+    const m = modelRef.current;
+    if (!rt || !m) return void start();
+    setSyncing(true);
+    try {
+      markBuilt(m, await rt.build(m));
+    } catch (e) {
+      if (!(e instanceof CancelledError)) setRun({ phase: "done", failure: `Re-sync failed: ${errorText(e)}` });
+    } finally {
+      setSyncing(false);
+    }
+  }, [markBuilt, start]);
 
-  // Generate realistic seed values per column
-  function generateSeedValue(attr: any, i: number, tableName: string): string {
-    const colName = attr.name.toLowerCase();
-    const type = (attr.type || "").toLowerCase();
+  // a query that is still running after a moment turns the Run button into Stop
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    setSlow(false);
+    if (run.phase !== "running") return;
+    const id = setTimeout(() => setSlow(true), 600);
+    return () => clearTimeout(id);
+  }, [run.phase, run.startedAt]);
 
-    if (attr.isPk && (type.includes("int") || type.includes("serial"))) {
-      return String(i);
-    }
-    if (colName.includes("id") && type.includes("int")) return String(i);
+  // ── stage switching & keyboard ──
+  const toggleMode = useCallback(() => {
+    setMode((m) => (m === "full" ? "docked" : "full"));
+    requestAnimationFrame(() => editorRef.current?.focus());
+  }, []);
+  const sectionRef = useRef<HTMLElement>(null);
 
-    if (colName === "name" || colName.includes("_name") || colName === "full_name") {
-      const names = ["Alice Smith", "Bob Johnson", "Carol White", "David Lee", "Eva Martinez"];
-      return `'${names[i - 1]}'`;
-    }
-    if (colName.includes("first_name")) {
-      const names = ["Alice", "Bob", "Carol", "David", "Eva"];
-      return `'${names[i - 1]}'`;
-    }
-    if (colName.includes("last_name")) {
-      const names = ["Smith", "Johnson", "White", "Lee", "Martinez"];
-      return `'${names[i - 1]}'`;
-    }
-    if (colName.includes("email")) {
-      const users = ["alice", "bob", "carol", "david", "eva"];
-      return `'${users[i - 1]}@example.com'`;
-    }
-    if (colName.includes("phone")) return `'555-000${i}'`;
-    if (colName.includes("address")) return `'${i * 100} Main St, City'`;
-    if (colName.includes("title") || colName.includes("product_name")) {
-      return `'${tableName} Item ${i}'`;
-    }
-    if (colName.includes("price") || colName.includes("amount") || colName.includes("cost")) {
-      return String((i * 19.99).toFixed(2));
-    }
-    if (colName.includes("quantity") || colName.includes("qty") || colName.includes("stock")) {
-      return String(i * 10);
-    }
-    if (colName.includes("status")) {
-      return `'${["active", "inactive", "pending", "active", "active"][i - 1]}'`;
-    }
-    if (colName.includes("country")) {
-      return `'${["USA", "UK", "Canada", "Germany", "France"][i - 1]}'`;
-    }
-    if (colName.includes("description")) return `'Description for ${tableName} ${i}'`;
-    if (colName.includes("lifetime_value") || colName.includes("revenue")) return String(i * 250.0);
-    if (type.includes("bool")) return i % 2 === 0 ? "1" : "0";
-    if (type.includes("date") || type.includes("timestamp")) {
-      const d = new Date(Date.now() - i * 24 * 3600 * 1000);
-      return `'${d.toISOString().split("T")[0]}'`;
-    }
-    if (type.includes("int") || type.includes("serial")) return String(i);
-    if (type.includes("float") || type.includes("decimal")) return String((i * 1.5).toFixed(2));
-
-    return `'Sample ${i}'`;
-  }
-
-  // Initialize sql.js when the sandbox opens
   useEffect(() => {
     if (!isOpen) return;
-    const init = async () => {
-      await loadSqlJs();
-      await buildDatabase();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return; // the editor used it: closing autocomplete, search, a tree filter…
+      const inside = !!sectionRef.current?.contains(document.activeElement);
+      if (e.key === "Escape") {
+        if (modeRef.current === "full") {
+          e.preventDefault();
+          setMode("docked");
+        } else if (inside) {
+          e.preventDefault();
+          onCloseRef.current();
+        }
+      } else if (e.key === "Enter" && e.altKey && !e.ctrlKey && !e.metaKey && (inside || modeRef.current === "full")) {
+        e.preventDefault();
+        toggleMode();
+      }
     };
-    init();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen]);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isOpen, toggleMode]);
 
-  // Execute query against real SQLite
-  const executeQuery = useCallback(() => {
-    if (!dbRef.current) {
-      setErrorMessage("SQLite engine not ready. Please wait or Re-Sync Schema.");
-      return;
-    }
-
-    setStatusMessage("");
-    setErrorMessage("");
-    setResults(null);
-    setExecTime(null);
-
-    const cleanQuery = query.replace(/--.*$/gm, "").trim();
-    if (!cleanQuery) {
-      setErrorMessage("Please enter an SQL query.");
-      return;
-    }
-
-    const start = performance.now();
+  // ── sizes ──
+  const [dockHeight, setDockHeight] = useState(320);
+  const dockRef = useRef(dockHeight);
+  dockRef.current = dockHeight;
+  const [resizing, setResizing] = useState(false);
+  useEffect(() => {
+    let saved = NaN;
     try {
-      const stmts = dbRef.current.exec(cleanQuery);
-      const elapsed = performance.now() - start;
-      setExecTime(Math.round(elapsed * 100) / 100);
-
-      if (stmts.length > 0) {
-        const last = stmts[stmts.length - 1];
-        setResults({ columns: last.columns, rows: last.values });
-        setStatusMessage(`Query OK — ${last.values.length} row(s) returned in ${elapsed.toFixed(1)}ms`);
-      } else {
-        // DML statement (INSERT, UPDATE, DELETE, CREATE, etc.)
-        const changes = dbRef.current.getRowsModified();
-        setStatusMessage(`Query OK — ${changes} row(s) affected in ${elapsed.toFixed(1)}ms`);
-      }
-    } catch (err: any) {
-      setErrorMessage(err.message || "An error occurred executing query.");
+      saved = Number(localStorage.getItem(DOCK_HEIGHT_KEY));
+    } catch {
+      /* storage blocked */
     }
-  }, [query]);
-
-  // Handle keyboard shortcut Ctrl+Enter to run query
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-      e.preventDefault();
-      executeQuery();
-    }
-  };
-
-  // AI Query Generator
-  const handleAiGenerate = async () => {
-    if (!aiPrompt.trim()) return;
-    setAiLoading(true);
-    setAiError("");
+    setDockHeight(Number.isFinite(saved) && saved > 0 ? clampDock(saved) : defaultDock());
+    const onResize = () => setDockHeight((h) => clampDock(h));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  const saveDock = (h: number) => {
     try {
-      const res = await fetch("/api/ai-query", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: aiPrompt, tables: tablesList }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "AI generation failed");
-      if (data.query) {
-        setQuery(data.query);
-        setAiPrompt("");
-      }
-    } catch (err: any) {
-      setAiError(err.message || "Failed to generate query");
-    } finally {
-      setAiLoading(false);
+      localStorage.setItem(DOCK_HEIGHT_KEY, String(h));
+    } catch {
+      /* storage blocked */
     }
   };
 
-  const handleAiKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleAiGenerate();
-    }
+  const onDockResizeStart = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const target = e.currentTarget;
+    const startY = e.clientY;
+    const startH = dockRef.current;
+    target.setPointerCapture(e.pointerId);
+    setResizing(true);
+    // at most one height per frame — pointer events can outpace rendering, and every height change re-lays out the canvas
+    let frame = 0;
+    let latest = startH;
+    const move = (ev: PointerEvent) => {
+      latest = clampDock(startH - (ev.clientY - startY));
+      if (!frame)
+        frame = requestAnimationFrame(() => {
+          frame = 0;
+          setDockHeight(latest);
+        });
+    };
+    const up = () => {
+      cancelAnimationFrame(frame);
+      frame = 0;
+      setDockHeight(latest);
+      dockRef.current = latest;
+      target.removeEventListener("pointermove", move);
+      target.removeEventListener("pointerup", up);
+      target.removeEventListener("pointercancel", up);
+      setResizing(false);
+      saveDock(dockRef.current);
+    };
+    target.addEventListener("pointermove", move);
+    target.addEventListener("pointerup", up);
+    target.addEventListener("pointercancel", up);
+  };
+  const onDockKey = (e: React.KeyboardEvent) => {
+    const step = e.shiftKey ? 80 : 24;
+    const next = e.key === "ArrowUp" ? dockHeight + step : e.key === "ArrowDown" ? dockHeight - step : e.key === "Home" ? MIN_DOCK : e.key === "End" ? viewportH() : null;
+    if (next === null) return;
+    e.preventDefault();
+    const h = clampDock(next);
+    setDockHeight(h);
+    saveDock(h);
+  };
+  const resetDock = () => {
+    const h = defaultDock();
+    setDockHeight(h);
+    saveDock(h);
   };
 
-  if (!isOpen) return null;
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const el = sectionRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    setWidth(Math.round(el.getBoundingClientRect().width));
+    let frame = 0;
+    const ro = new ResizeObserver(([entry]) => {
+      // next frame: re-laying out the panes inside the observer's callback resizes the editor (itself observed) in the
+      // same frame, which browsers report as "ResizeObserver loop completed with undelivered notifications"
+      const w = Math.round(entry.contentRect.width);
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => setWidth(w));
+    });
+    ro.observe(el);
+    return () => {
+      cancelAnimationFrame(frame);
+      ro.disconnect();
+    };
+  }, [everOpened]);
 
-  const containerClass = embedded
-    ? "flex-1 overflow-hidden bg-transparent"
-    : "absolute bottom-6 z-40 bg-[#060B15]/97 backdrop-blur-xl border border-white/[0.08] flex flex-col rounded-2xl shadow-[0_16px_64px_rgba(0,0,0,0.85)] h-[360px] animate-in slide-in-from-bottom-6 duration-300 pointer-events-auto";
+  const [treePref, setTreePref] = useState<boolean | null>(null); // null: automatic, by width
+  const [split, setSplit] = useState({ docked: 0.5, full: 0.46 });
+  const mainRef = useRef<HTMLDivElement>(null);
 
-  // Offset the popup to avoid being overlapped by the permanent left sidebar (w-16 / 64px).
-  // Keep original small gap of 24px from the sidebar and right edge.
-  const SIDEBAR_WIDTH_PX = 64; // matches NavigationSidebar w-16
-  const SANDBOX_GAP_LEFT_PX = 24; // equivalent to previous left-6 (24px)
-  const SANDBOX_GAP_RIGHT_PX = 24; // equivalent to previous right-6 (24px)
-  const containerStyle: React.CSSProperties | undefined = embedded
-    ? undefined
-    : { left: `${SIDEBAR_WIDTH_PX + SANDBOX_GAP_LEFT_PX}px`, right: `${SANDBOX_GAP_RIGHT_PX}px` };
+  const full = mode === "full";
+  const showTree = treePref ?? (width === 0 || width >= (full ? 720 : 860));
+  const mainW = width - (showTree ? TREE_W[mode] : 0);
+  const vertical = full || (mainW > 0 && mainW < 620); // docked panels stack editor over results when narrow
+  const frac = full ? split.full : split.docked;
+
+  const onSplitStart = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0 || !mainRef.current) return;
+    e.preventDefault();
+    const target = e.currentTarget;
+    const box = mainRef.current.getBoundingClientRect();
+    const key = full ? "full" : "docked";
+    target.setPointerCapture(e.pointerId);
+    setResizing(true);
+    const move = (ev: PointerEvent) => {
+      const f = vertical ? (ev.clientY - box.top) / box.height : (ev.clientX - box.left) / box.width;
+      setSplit((s) => ({ ...s, [key]: Math.min(0.8, Math.max(0.2, f)) }));
+    };
+    const up = () => {
+      target.removeEventListener("pointermove", move);
+      target.removeEventListener("pointerup", up);
+      target.removeEventListener("pointercancel", up);
+      setResizing(false);
+    };
+    target.addEventListener("pointermove", move);
+    target.addEventListener("pointerup", up);
+    target.addEventListener("pointercancel", up);
+  };
+
+  // ── header bits ──
+  const [notesOpen, setNotesOpen] = useState(false);
+  const notesRef = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!notesOpen) return;
+    const close = (e: MouseEvent) => {
+      if (!notesRef.current?.contains(e.target as globalThis.Node)) setNotesOpen(false);
+    };
+    document.addEventListener("pointerdown", close, true); // capture: the canvas stops mousedown from bubbling
+    return () => document.removeEventListener("pointerdown", close, true);
+  }, [notesOpen]);
+
+  const modKey = useMemo(() => (typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl"), []);
+
+  if (!everOpened) return null;
+
+  const ready = engine === "ready";
+  const running = run.phase === "running";
+  const outOfSync = ready && !!built && built.sig !== liveSig;
+  const issues = built?.report.issues ?? [];
+  const dbType = model?.project?.databaseType;
+  const narrow = width > 0 && width < 640;
+
+  let syncChip: React.ReactNode = null;
+  if (engine === "starting" || engine === "idle" || syncing)
+    syncChip = (
+      <span className="flex items-center gap-1.5 text-[11px] text-white/45 whitespace-nowrap">
+        <Loader2 size={11} className="animate-spin" />
+        {engine === "ready" ? "Syncing…" : "Starting…"}
+      </span>
+    );
+  else if (engine === "failed") syncChip = <span className="text-[11px] font-semibold text-red-300 whitespace-nowrap">Engine error</span>;
+  else if (outOfSync)
+    syncChip = (
+      <button type="button" onClick={resync} title="The diagram changed since the database was built — rebuild it (rows you changed here are discarded)" className="flex items-center gap-1.5 h-6 px-2 rounded-md bg-amber-400/10 border border-amber-400/30 text-amber-200 hover:bg-amber-400/20 text-[11px] font-semibold whitespace-nowrap">
+        <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+        {narrow ? "Re-sync" : "Diagram changed · Re-sync"}
+      </button>
+    );
+  else if (built)
+    syncChip = (
+      <span className="flex items-center gap-1 text-[11px] text-white/40 whitespace-nowrap" title={`${built.report.tables} tables · ${built.report.rows} sample rows · built in ${Math.round(built.report.timeMs)} ms`}>
+        <Check size={11} className="text-lime-green" />
+        In sync
+      </span>
+    );
+
+  const runButton = running ? (
+    <button
+      type="button"
+      onClick={slow ? stop : undefined}
+      disabled={!slow}
+      className={`flex items-center gap-2 h-8 px-3 rounded-lg text-[12px] font-semibold shadow-lg ${slow ? "bg-[#2a1618] border border-red-500/40 text-red-200 hover:bg-[#3a1c1f]" : "bg-[#4A90D9]/60 text-white/80 cursor-wait"}`}
+    >
+      {slow ? <Square size={10} fill="currentColor" /> : <Loader2 size={12} className="animate-spin" />}
+      {slow ? "Stop" : "Running…"}
+    </button>
+  ) : (
+    <button
+      type="button"
+      onClick={runEditor}
+      disabled={!ready}
+      title={`Run ${hasSelection ? "the selected SQL" : "every statement"} (${modKey}+Enter)`}
+      className="flex items-center gap-2 h-8 pl-3 pr-1.5 rounded-lg bg-[#4A90D9] hover:bg-[#5ba0e9] disabled:opacity-40 disabled:cursor-not-allowed text-white text-[12px] font-semibold shadow-[0_6px_20px_rgba(74,144,217,0.35)]"
+    >
+      <Play size={11} fill="currentColor" />
+      {hasSelection ? "Run selection" : "Run"}
+      <kbd className="ml-0.5 px-1.5 py-0.5 rounded bg-black/25 text-[10px] font-mono text-white/80">{modKey} ↵</kbd>
+    </button>
+  );
 
   return (
-    <div className={containerClass} style={containerStyle}>
-      {/* Header */}
-      <div className="px-5 py-3 border-b border-white/[0.06] flex justify-between items-center shrink-0">
-        <div className="flex items-center gap-2.5">
-          <div className="p-1 rounded bg-[#4A90D9]/10 text-[#4A90D9]">
-            <Database size={14} />
-          </div>
-          <div>
-            <h3 className="font-semibold text-xs text-white uppercase tracking-wider font-sans">Live SQLite Playground Sandbox</h3>
-            <span className="text-[10px] text-white/50 block font-medium">
-              Full SQLite engine — GROUP BY, HAVING, CASE, aggregates &amp; more &nbsp;·&nbsp;
-              <kbd className="bg-white/[0.06] border border-white/[0.08] rounded px-1 py-0.5 text-[9px] font-mono">Ctrl+Enter</kbd> to run
-            </span>
-          </div>
+    <section
+      ref={sectionRef}
+      role={full ? "dialog" : "region"}
+      aria-modal={full ? true : undefined}
+      aria-label="SQL playground"
+      className={`${isOpen ? "flex" : "hidden"} flex-col min-h-0 text-white bg-[#0b0f18] ${
+        full ? "fixed inset-0 z-[70]" : "relative shrink-0 border-t border-white/[0.1] shadow-[0_-16px_40px_rgba(0,0,0,0.45)]"
+      } ${resizing ? "select-none" : ""}`}
+      style={full ? undefined : { height: dockHeight }}
+    >
+      {!full && (
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Resize the SQL playground"
+          aria-valuemin={MIN_DOCK}
+          aria-valuemax={Math.max(MIN_DOCK, viewportH() - KEEP_ABOVE_DOCK)}
+          aria-valuenow={dockHeight}
+          tabIndex={0}
+          title="Drag to resize · double-click to reset"
+          onPointerDown={onDockResizeStart}
+          onDoubleClick={resetDock}
+          onKeyDown={onDockKey}
+          className="group/handle absolute -top-[5px] inset-x-0 h-[10px] z-20 cursor-row-resize flex items-center justify-center outline-none"
+        >
+          <span className={`h-[3px] w-12 rounded-full transition-colors ${resizing ? "bg-[#4A90D9]" : "bg-white/15 group-hover/handle:bg-[#4A90D9] group-focus-visible/handle:bg-[#4A90D9]"}`} />
         </div>
+      )}
 
-        <div className="flex items-center gap-3">
-          <button
-            onClick={async () => { setDbReady(false); await buildDatabase(); }}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.08] text-white/70 hover:text-white hover:bg-white/[0.08] text-[11px] font-semibold transition-all"
-            title="Re-initialize database from canvas schema"
-          >
-            <RotateCcw size={12} />
-            Re-Sync Schema
-          </button>
-          <button
-            onClick={onClose}
-            className="text-white/65 hover:text-white hover:bg-white/[0.06] rounded-md text-xs p-1 px-1.5 transition-all"
-          >
-            ✕
-          </button>
-        </div>
-      </div>
-
-      <div className="flex flex-1 overflow-hidden min-h-0">
-        {/* Left: Schema + Query Input */}
-        <div className="flex-[1.2] flex flex-col border-r border-white/[0.06] p-4 gap-3">
-          <div className="flex justify-between items-center shrink-0">
-            <span className="text-[10px] font-sans font-semibold tracking-wider text-white/65 uppercase [font-variant:all-small-caps]">SQL Console</span>
-            <button
-              onClick={executeQuery}
-              disabled={!dbReady || isLoading}
-              className="flex items-center gap-1 px-3 py-1 bg-[#4A90D9] text-white hover:bg-[#4A90D9]/90 disabled:opacity-40 disabled:cursor-not-allowed text-[11px] font-bold rounded-lg transition-all shadow-[0_4px_12px_rgba(74,144,217,0.25)]"
-            >
-              {isLoading ? <Loader2 size={10} className="animate-spin" /> : <Play size={10} fill="currentColor" />}
-              Run Query
+      {/* ── header ── */}
+      <header className={`${full ? "h-12 px-3" : "h-10 px-2.5"} shrink-0 flex items-center gap-2 border-b border-white/[0.08] bg-[#0d121d]`}>
+        {full && (
+          <>
+            <button type="button" onClick={toggleMode} title="Back to the ERD canvas — the playground stays docked below it (Esc)" className="h-8 px-2.5 flex items-center gap-1.5 rounded-lg bg-white/[0.05] border border-white/[0.09] text-[12px] font-semibold text-white/80 hover:text-white hover:bg-white/[0.09]">
+              <ArrowLeft size={14} />
+              Back to ERD canvas
             </button>
-          </div>
-
-          <div className="flex-1 flex gap-3 min-h-0">
-            {/* Schema index */}
-            <div className="w-40 overflow-y-auto bg-white/[0.01] border border-white/[0.04] rounded-xl p-2.5 flex flex-col gap-2 p-scrollbar select-none shrink-0">
-              <span className="text-[9px] text-white/65 font-mono uppercase tracking-wider block border-b border-white/[0.04] pb-1 mb-1">Tables</span>
-              {Object.keys(tablesList).length === 0 ? (
-                <div className="text-[10px] text-white/30 italic">No tables yet.</div>
-              ) : (
-                Object.entries(tablesList).map(([tName, cols]) => (
-                  <div key={tName} className="flex flex-col gap-0.5">
-                    <button
-                      className="text-xs text-[#C9C8C7] font-semibold flex items-center gap-1 hover:text-[#4A90D9] transition-colors text-left"
-                      onClick={() => setQuery(`SELECT * FROM ${tName} LIMIT 10;`)}
-                      title={`Click to SELECT from ${tName}`}
-                    >
-                      <Table size={10} className="text-[#4A90D9]/60 shrink-0" />
-                      {tName}
-                    </button>
-                    <div className="pl-3.5 flex flex-col">
-                      {cols.map(c => (
-                        <span key={c.name} className="text-[9px] text-white/50 font-mono leading-relaxed">
-                          {c.name} <span className="text-white/20">({c.type})</span>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-
-            {/* AI Query Generator */}
-            <div className="shrink-0 flex flex-col gap-1.5">
-              <div className="flex items-center gap-1.5">
-                <div className="flex-1 relative">
-                  <div className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#b38fff]/60 pointer-events-none">
-                    <Sparkles size={11} />
-                  </div>
-                  <input
-                    type="text"
-                    value={aiPrompt}
-                    onChange={(e) => setAiPrompt(e.target.value)}
-                    onKeyDown={handleAiKeyDown}
-                    placeholder='Ask AI: "show top 5 customers by total orders"'
-                    className="w-full bg-[#0A0E1A] border border-[#b38fff]/20 rounded-lg pl-8 pr-2.5 py-1.5 text-[11px] text-white/80 placeholder-white/25 font-mono outline-none focus:border-[#b38fff]/50 transition-colors"
-                    disabled={aiLoading || !dbReady}
-                  />
-                </div>
-                <button
-                  onClick={handleAiGenerate}
-                  disabled={aiLoading || !aiPrompt.trim() || !dbReady}
-                  className="flex items-center gap-1 px-2.5 py-1.5 text-[10px] font-bold rounded-lg bg-gradient-to-r from-[#b38fff]/20 to-[#4A90D9]/20 border border-[#b38fff]/30 text-[#b38fff] hover:from-[#b38fff]/30 hover:to-[#4A90D9]/30 transition-all disabled:opacity-30 whitespace-nowrap"
-                >
-                  {aiLoading ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />}
-                  Generate
-                </button>
+            <span className="w-px h-5 bg-white/[0.1] mx-1" />
+          </>
+        )}
+        <span className="flex items-center gap-2 min-w-0">
+          <span className="w-6 h-6 rounded-md bg-[#4A90D9]/15 text-[#7fb6ef] flex items-center justify-center shrink-0">
+            <Database size={13} />
+          </span>
+          <span className="text-[12.5px] font-bold tracking-wide whitespace-nowrap">SQL Playground</span>
+        </span>
+        {!narrow && (
+          <span
+            title={`SQLite compiled to WebAssembly (sql.js), running ${runtimeRef.current?.kind === "inline" ? "on the page" : "in a background worker"} — nothing leaves this browser.\nYour diagram's keys, NOT NULL / UNIQUE / CHECK constraints, foreign keys and their ON DELETE / ON UPDATE actions are enforced.${dbType && !/sqlite/i.test(dbType) ? `\nYour diagram targets ${dbType}: SQL written for it can differ from SQLite's dialect.` : ""}`}
+            className="px-1.5 py-0.5 rounded border border-white/[0.1] bg-white/[0.03] text-[10px] font-mono text-white/50 whitespace-nowrap"
+          >
+            SQLite · WebAssembly
+          </span>
+        )}
+        {syncChip}
+        {issues.length > 0 && !syncing && (
+          <span ref={notesRef} className="relative">
+            <button type="button" onClick={() => setNotesOpen((o) => !o)} aria-expanded={notesOpen} className="flex items-center gap-1 h-6 px-1.5 rounded-md text-[11px] text-amber-200/80 hover:text-amber-100 hover:bg-white/[0.05] whitespace-nowrap">
+              <AlertTriangle size={11} />
+              {issues.length} note{issues.length === 1 ? "" : "s"}
+            </button>
+            {notesOpen && (
+              <div className="absolute left-0 top-full mt-1.5 z-30 w-[380px] max-w-[80vw] p-3 rounded-lg bg-[#111827] border border-white/[0.12] shadow-[0_16px_48px_rgba(0,0,0,0.7)] space-y-1.5">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-white/40">Built with notes</p>
+                {issues.map((m, i) => (
+                  <p key={i} className="text-[11.5px] leading-relaxed text-white/75">
+                    {m}
+                  </p>
+                ))}
               </div>
-              {aiError && (
-                <span className="text-[9px] text-red-400/80 font-mono pl-1">{aiError}</span>
-              )}
-            </div>
+            )}
+          </span>
+        )}
 
-            {/* Query editor */}
-            <textarea
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={handleKeyDown}
-              className="flex-1 bg-[#040810] border border-white/[0.08] rounded-xl p-3 text-xs text-white/95 font-mono outline-none focus:border-[#4A90D9]/40 resize-none leading-relaxed p-scrollbar"
-              spellCheck="false"
-              placeholder="Write any SQL here..."
+        <span className="ml-auto flex items-center gap-0.5 shrink-0">
+          <button type="button" onClick={() => setTreePref(!showTree)} title={showTree ? "Hide the schema" : "Show the schema"} aria-pressed={showTree} className={iconBtn}>
+            {showTree ? <PanelLeftClose size={14} /> : <PanelLeftOpen size={14} />}
+          </button>
+          <button type="button" onClick={resync} disabled={!ready || syncing} title="Rebuild the playground database from the diagram — rows you changed here are discarded" className={iconBtn}>
+            <RotateCcw size={13} className={syncing ? "animate-spin" : ""} />
+            {!narrow && <span>{full ? "Re-sync schema" : "Re-sync"}</span>}
+          </button>
+          <button type="button" onClick={toggleMode} title={full ? "Minimize to the docked panel (Esc or Alt+Enter)" : "Maximize — full-screen SQL IDE (Alt+Enter)"} aria-label={full ? "Minimize" : "Maximize"} className={iconBtn}>
+            {full ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+          </button>
+          <button type="button" onClick={onClose} title="Close the playground — your query and results are kept" aria-label="Close" className={iconBtn}>
+            <X size={15} />
+          </button>
+        </span>
+      </header>
+
+      {/* ── body: schema | editor + results ── */}
+      <div className="flex-1 min-h-0 flex">
+        {showTree && (
+          <aside className="shrink-0 min-h-0 border-r border-white/[0.07] bg-[#090d15]" style={{ width: TREE_W[mode] }} aria-label="Schema">
+            <SchemaTree tables={tables} built={built?.keys ?? null} onInsert={insert} onPreview={preview} onLocate={locate} />
+          </aside>
+        )}
+        <div ref={mainRef} className={`flex-1 min-w-0 min-h-0 flex ${vertical ? "flex-col" : "flex-row"}`}>
+          <div className="relative min-w-0 min-h-0 overflow-hidden" style={{ flex: `0 0 ${Math.round(frac * 1000) / 10}%` }}>
+            <SqlEditor ref={editorRef} tables={tables} onRun={runEditor} onSelectionChange={setHasSelection} />
+            <div className="absolute bottom-3 right-4 z-10">{runButton}</div>
+          </div>
+          <div
+            role="separator"
+            aria-orientation={vertical ? "horizontal" : "vertical"}
+            aria-label="Resize the editor and results"
+            title="Drag to resize · double-click to reset"
+            onPointerDown={onSplitStart}
+            onDoubleClick={() => setSplit({ docked: 0.5, full: 0.46 })}
+            className={`${vertical ? "h-[5px] cursor-row-resize" : "w-[5px] cursor-col-resize"} shrink-0 bg-white/[0.05] hover:bg-[#4A90D9]/60 transition-colors`}
+          />
+          <div className="flex-1 min-w-0 min-h-0">
+            <ResultsPanel
+              engine={engine === "ready" ? "ready" : engine === "failed" ? "failed" : "starting"}
+              engineError={engineError}
+              run={run}
+              active={activeResult}
+              onActive={setActiveResult}
+              onShowError={showError}
+              onStop={stop}
+              onRetry={start}
+              modKey={modKey}
             />
           </div>
         </div>
-
-        {/* Right: Results */}
-        <div className="flex-1 flex flex-col p-4 bg-white/[0.005] overflow-hidden min-h-0">
-          <div className="flex items-center justify-between mb-2 shrink-0">
-            <span className="text-[10px] font-sans font-semibold tracking-wider text-white/65 uppercase [font-variant:all-small-caps]">Query Output</span>
-            {execTime !== null && (
-              <span className="text-[9px] text-white/30 font-mono">{execTime}ms</span>
-            )}
-          </div>
-
-          <div className="flex-1 overflow-auto bg-[#040810]/40 border border-white/[0.04] rounded-xl p-3 p-scrollbar flex flex-col gap-2 min-h-0">
-            {isLoading && (
-              <div className="flex items-center gap-2 text-xs text-white/50 py-8 justify-center">
-                <Loader2 size={14} className="animate-spin text-[#4A90D9]" />
-                Initializing SQLite engine...
-              </div>
-            )}
-
-            {errorMessage && (
-              <div className="flex items-start gap-2 text-xs text-red-400 bg-red-500/10 border border-red-500/20 p-3 rounded-lg leading-relaxed shrink-0">
-                <AlertTriangle size={13} className="shrink-0 mt-0.5" />
-                <span>{errorMessage}</span>
-              </div>
-            )}
-
-            {statusMessage && !errorMessage && (
-              <div className="flex items-center gap-2 text-[11px] text-lime-green font-mono bg-lime-500/5 border border-lime-500/10 px-3 py-2 rounded-lg shrink-0">
-                <CheckCircle size={12} className="shrink-0 text-lime-green" />
-                <span>{statusMessage}</span>
-              </div>
-            )}
-
-            {!results && !errorMessage && !isLoading && (
-              <div className="flex flex-col items-center justify-center text-white/35 py-10 gap-1.5 flex-1 select-none">
-                <HelpCircle size={26} className="text-white/20" />
-                <span className="text-xs">Run a query to see results here.</span>
-                <span className="text-[10px] text-white/20">Full SQL supported: GROUP BY, HAVING, CASE, JOINs, aggregates...</span>
-              </div>
-            )}
-
-            {results && results.rows.length > 0 && (
-              <div className="overflow-auto border border-white/[0.06] rounded-xl bg-[#04070e]/80">
-                <table className="w-full text-left text-xs border-collapse min-w-max">
-                  <thead>
-                    <tr className="bg-white/[0.03] border-b border-white/[0.06]">
-                      {results.columns.map(col => (
-                        <th key={col} className="p-2.5 font-bold text-white/70 font-mono tracking-wide whitespace-nowrap">{col}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {results.rows.map((row, rIdx) => (
-                      <tr key={rIdx} className="border-b border-white/[0.03] last:border-none hover:bg-white/[0.015] transition-colors">
-                        {row.map((cell: any, cIdx: number) => (
-                          <td key={cIdx} className="p-2.5 font-mono text-slate-300 whitespace-nowrap">
-                            {cell === null ? <span className="text-white/20 italic">NULL</span> : String(cell)}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {results && results.rows.length === 0 && !errorMessage && (
-              <div className="text-xs text-white/50 italic p-3 text-center">Empty set — no rows match the query.</div>
-            )}
-          </div>
-        </div>
       </div>
-    </div>
+    </section>
   );
-}
+});

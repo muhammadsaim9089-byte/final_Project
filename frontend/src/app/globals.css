@@ -144,6 +144,30 @@
   .p-scrollbar::-webkit-scrollbar-thumb:hover {
     background: rgba(255, 255, 255, 0.2);
   }
+  /* no arrow buttons, and no light square where a vertical and a horizontal bar meet */
+  .p-scrollbar::-webkit-scrollbar-button {
+    display: none;
+  }
+  .p-scrollbar::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  /* the same bar over a white surface (an image / PDF preview), where a white thumb would vanish */
+  .p-scrollbar.p-scrollbar-onlight::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.14);
+  }
+  .p-scrollbar.p-scrollbar-onlight::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.26);
+  }
+  /* browsers without ::-webkit-scrollbar (Firefox): the closest standard equivalent */
+  @supports not selector(::-webkit-scrollbar) {
+    .p-scrollbar {
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+    }
+    .p-scrollbar.p-scrollbar-onlight {
+      scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+    }
+  }
 
   /* Hide scrollbar visually while keeping scroll functionality */
   .scrollbar-hide::-webkit-scrollbar {
@@ -172,6 +196,35 @@
 
 @keyframes border-spin {
   100% { transform: rotate(360deg); }
+}
+
+/* The AI on/off switch in the top bar (components/Layout/AiToggle) */
+@keyframes ai-track-flow {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+@keyframes ai-sparkle-pop {
+  0% { transform: scale(1) rotate(0deg); }
+  45% { transform: scale(1.35) rotate(-18deg); }
+  100% { transform: scale(1) rotate(0deg); }
+}
+@keyframes ai-sparkle-glow {
+  0%, 100% { filter: drop-shadow(0 0 0 rgba(196, 181, 253, 0)); }
+  50% { filter: drop-shadow(0 0 5px rgba(196, 181, 253, 0.9)); }
+}
+.ai-track-on {
+  background: linear-gradient(90deg, #8b5cf6, #4a90d9, #22d3ee, #8b5cf6);
+  background-size: 200% 100%;
+  animation: ai-track-flow 2.4s linear infinite;
+}
+.ai-sparkle-on {
+  animation: ai-sparkle-pop 0.5s cubic-bezier(.34, 1.56, .64, 1), ai-sparkle-glow 2.4s ease-in-out 0.5s infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ai-track-on,
+  .ai-sparkle-on {
+    animation: none;
+  }
 }
 
 @keyframes dash {
@@ -401,4 +454,48 @@ html.light .animated-dot-grid::after {
   border-color: rgba(74, 144, 217, 0.6) !important;
   ring: 2px solid rgba(74, 144, 217, 0.4);
   z-index: 50;
+}
+/* height of the two-row top bar (menu row 54px + tabs row 3rem) - panels that sit under it use this */
+:root {
+  --app-header-h: 102px;
+}
+
+/* Code editors: the scrollbar stays invisible until the pointer is over the editor (dbdiagram.io style) */
+.code-scroll::-webkit-scrollbar,
+.code-scroll .cm-scroller::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+.code-scroll::-webkit-scrollbar-track,
+.code-scroll::-webkit-scrollbar-corner,
+.code-scroll .cm-scroller::-webkit-scrollbar-track,
+.code-scroll .cm-scroller::-webkit-scrollbar-corner {
+  background: transparent;
+}
+.code-scroll::-webkit-scrollbar-button,
+.code-scroll .cm-scroller::-webkit-scrollbar-button {
+  display: none;
+}
+.code-scroll::-webkit-scrollbar-thumb,
+.code-scroll .cm-scroller::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+.code-scroll:hover::-webkit-scrollbar-thumb,
+.code-scroll:hover .cm-scroller::-webkit-scrollbar-thumb {
+  background: rgba(121, 121, 121, 0.4);
+}
+.code-scroll::-webkit-scrollbar-thumb:hover,
+.code-scroll .cm-scroller::-webkit-scrollbar-thumb:hover {
+  background: rgba(121, 121, 121, 0.7);
+}
+@supports not selector(::-webkit-scrollbar) {
+  .code-scroll,
+  .code-scroll .cm-scroller {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+  .code-scroll:hover,
+  .code-scroll:hover .cm-scroller {
+    scrollbar-color: rgba(121, 121, 121, 0.5) transparent;
+  }
 }

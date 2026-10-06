@@ -1,25 +1,59 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useRef } from "react";
-import { PlusSquare, Component, FileCode2, X, Trash2, Key, Copy, Check, Info, Settings, ArrowUp, ArrowRightLeft, Eye, EyeOff, Search, Layers, ChevronDown, ChevronRight, Plus, MoreVertical, Star, Table2, Users, Pencil, CopyPlus, RotateCcw } from "lucide-react";
-import { Node, Edge } from "@xyflow/react";
-import { parseSqlDdl } from "../../lib/sqlParser";
+import React, { useEffect, useRef, useState } from "react";
+import type { Edge, Node } from "@xyflow/react";
+import { PlusSquare, Component, X, Trash2, Key, Settings, ArrowRight, Eye, EyeOff, Search, Layers, ChevronDown, ChevronRight, Plus, MoreVertical, Table2, Pencil, CopyPlus, Check, StickyNote, GitBranch, Group, Ungroup, Palette, Code2, Link2, MousePointerClick, Rows3, Hash, ShieldCheck } from "lucide-react";
+import { useLayout } from "@/components/Layout/LayoutContext";
+import { showToast } from "@/components/ui/toast";
+import { parseDbml } from "@/lib/dbml/parser";
+import { isDepEdge, isTableNode, nodeKey, normalizeRelType } from "@/lib/model/canvasAdapter";
+import { confirmAction } from "@/components/ui/confirm";
+import { requestCanvasDelete } from "./deleteRequest";
+import { GROUP_NODE_PREFIX, activeView, groupNameFromId, isGroupNodeId, isTableInView } from "@/lib/model/displayGraph";
+import { DiagramViewModel, ProjectMeta, rekeyViews, slugify } from "@/lib/model/types";
+import { SQL_DIALECTS } from "@/lib/sql/dialects";
+import { assignGroup, gatherGroup, ungroupTables } from "@/lib/model/groups";
 
-const SQL_TYPES = ["serial", "integer", "varchar(255)", "text", "boolean", "timestamp", "date", "float", "decimal(10,2)", "uuid", "char(36)"];
+/** Width of the Inspect drawer — the canvas moves its minimap / floating chat box out of the way by this much. */
+export const INSPECT_DRAWER_WIDTH = 380;
+
 const FONT_OPTIONS = ["Vagnola Regular", "Inter", "JetBrains Mono", "Roboto", "Fira Code"];
-const THEME_COLORS = [
-  { name: "Lime", hex: "#C2EF4E", bg: "bg-lime-green" },
-  { name: "Purple", hex: "#6A5FC1", bg: "bg-sentry-purple" },
-  { name: "Coral", hex: "#FF6B6B", bg: "bg-coral-accent" },
-  { name: "Slate", hex: "#64748b", bg: "bg-slate-500" },
+const PALETTE = ["#B8A9E8", "#6EE7B7", "#FCA5A5", "#FCD34D", "#7DD3FC", "#F9A8D4", "#BEF264", "#94A3B8"];
+const NOTE_COLORS = ["#fcd34d", "#7dd3fc", "#6ee7b7", "#f9a8d4", "#c4b5fd"];
+const ON_ACTIONS = ["NO ACTION", "CASCADE", "SET NULL", "SET DEFAULT", "RESTRICT"];
+const CARDINALITY = [
+  { type: "one-to-one", label: "1 : 1", hint: "One-to-one" },
+  { type: "one-to-many", label: "1 : N", hint: "One-to-many" },
+  { type: "many-to-many", label: "N : M", hint: "Many-to-many" },
 ];
 
-interface NodeAttribute {
-  name: string;
-  type: string;
-  isPk: boolean;
-  isFk: boolean;
-}
+const SINGLE_TABLE_PRESETS: { id: string; label: string; dbml: string }[] = [
+  {
+    id: "users",
+    label: "Users",
+    dbml: "Table users {\n  id integer [pk, increment]\n  name varchar(255) [not null]\n  email varchar(255) [unique, not null]\n  password_hash varchar(255) [not null]\n  created_at timestamp [default: `now()`]\n}",
+  },
+  {
+    id: "products",
+    label: "Products",
+    dbml: "Table products {\n  id integer [pk, increment]\n  name varchar(255) [not null]\n  description text\n  price decimal(10,2) [not null]\n  stock integer [default: 0]\n  created_at timestamp [default: `now()`]\n}",
+  },
+  {
+    id: "audit_log",
+    label: "Audit log",
+    dbml: "Table audit_log {\n  id integer [pk, increment]\n  actor varchar(120)\n  action varchar(60) [not null]\n  entity varchar(120)\n  payload text\n  created_at timestamp [default: `now()`]\n}",
+  },
+];
+
+// ───────────────────────── shared style tokens ─────────────────────────
+const inputCls = "w-full bg-white/[0.03] border border-white/[0.08] rounded-lg px-3 py-2 text-xs text-white placeholder:text-white/25 outline-none focus:border-[#4A90D9]/50 focus:bg-white/[0.05] transition-all";
+const selectCls = "w-full bg-[#080E18] border border-white/[0.08] rounded-lg px-2.5 py-2 text-xs text-white outline-none cursor-pointer focus:border-[#4A90D9]/50 transition-all";
+const btnPrimary = "w-full flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-bold rounded-xl bg-[#4A90D9] text-white hover:bg-[#5ba0e9] transition-all shadow-lg shadow-[#4A90D9]/15 disabled:opacity-40 disabled:cursor-not-allowed";
+const btnSoft = "flex items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-semibold rounded-lg bg-white/[0.04] border border-white/[0.08] text-white/80 hover:bg-white/[0.08] hover:text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed";
+const btnDanger = "flex items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-bold rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 hover:bg-red-500/20 transition-all";
+const labelCls = "text-[10px] text-white/45 uppercase tracking-wide font-semibold block mb-1";
+
+type Snap = { nodes?: Node[]; edges?: Edge[]; meta?: ProjectMeta };
 
 interface UnifiedSidebarProps {
   nodes: Node[];
@@ -33,522 +67,954 @@ interface UnifiedSidebarProps {
   showGrid: boolean;
   setShowGrid: (show: boolean) => void;
   onAutoLayout: () => void;
-  onDeleteNode?: (id: string) => void;
-  generatedSql: string;
+  generatedSql?: string;
   activeTab: "add" | "inspector" | "views";
   setActiveTab: (tab: "add" | "inspector" | "views") => void;
   onClose: () => void;
   sqlDialect: string;
   setSqlDialect: (dialect: string) => void;
-  takeSnapshot: () => void;
+  takeSnapshot: (override?: Snap) => void;
   onFocusNode?: (nodeId: string) => void;
   onOpenTableEditor?: (id: string | "new") => void;
 }
 
-// ─── Types ───
-interface DiagramView {
-  id: string;
-  name: string;
-  hiddenTableIds: Set<string>;
-  isDefault: boolean;
+/** Everything a panel needs to change the diagram: state, meta and one undo-aware `commit`. */
+interface Ops {
+  nodes: Node[];
+  edges: Edge[];
+  meta: ProjectMeta;
+  commit: (next: Snap) => void;
+  /** Live update without an undo step (typing, dragging a colour picker). */
+  live: (next: Snap) => void;
+  snapshot: () => void;
+  patchNode: (id: string, patch: Record<string, any>, snapshot?: boolean) => void;
+  uniqueName: (base: string, schema?: string) => string;
+  focus: (id: string) => void;
 }
 
-// ─── Diagram Views Panel (dbdiagram.io-style) ───
-function DiagramViewsPanel({
-  nodes,
-  setNodes,
-  edges,
-  setEdges,
-  takeSnapshot,
-  onFocusNode,
-}: {
-  nodes: Node[];
-  setNodes: any;
-  edges: Edge[];
-  setEdges: any;
-  takeSnapshot: () => void;
-  onFocusNode?: (nodeId: string) => void;
-}) {
-  // ── View Management State ──
-  const [views, setViews] = useState<DiagramView[]>([
-    { id: "default", name: "Default View", hiddenTableIds: new Set(), isDefault: true },
-  ]);
-  const [activeViewId, setActiveViewId] = useState("default");
-  const [unsavedChanges, setUnsavedChanges] = useState(false);
+const newId = (prefix: string) => (typeof crypto !== "undefined" && crypto.randomUUID ? `${prefix}_${crypto.randomUUID().slice(0, 8)}` : `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`);
 
-  // ── UI State ──
-  const [searchQuery, setSearchQuery] = useState("");
-  const [groupBy, setGroupBy] = useState<"schema" | "tableGroup">("schema");
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
-  const [viewDropdownOpen, setViewDropdownOpen] = useState(false);
-  const [groupByDropdownOpen, setGroupByDropdownOpen] = useState(false);
-  const [viewMenuId, setViewMenuId] = useState<string | null>(null);
-  const [renamingViewId, setRenamingViewId] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState("");
+function groupNames(nodes: Node[], meta: ProjectMeta): string[] {
+  const set = new Set<string>(Object.keys(meta.groups));
+  for (const n of nodes) if (isTableNode(n) && (n.data as any).group) set.add(String((n.data as any).group));
+  return Array.from(set).filter((g) => nodes.some((n) => isTableNode(n) && (n.data as any).group === g)).sort((a, b) => a.localeCompare(b));
+}
 
-  const viewDropdownRef = useRef<HTMLDivElement>(null);
-  const groupByDropdownRef = useRef<HTMLDivElement>(null);
-  const viewMenuRef = useRef<HTMLDivElement>(null);
+// ───────────────────────── small UI pieces ─────────────────────────
+function SectionTitle({ children, badge }: { children: React.ReactNode; badge?: string }) {
+  return (
+    <div className="flex justify-between items-center border-b border-white/[0.05] pb-2">
+      <span className="text-[11px] font-sans font-semibold tracking-wider text-white/65 uppercase [font-variant:all-small-caps]">{children}</span>
+      {badge && <span className="text-[9px] text-[#4A90D9] bg-[#4A90D9]/10 border border-[#4A90D9]/20 px-1.5 py-0.5 rounded font-mono font-bold uppercase">{badge}</span>}
+    </div>
+  );
+}
 
-  const activeView = views.find(v => v.id === activeViewId) || views[0];
+function Toggle({ on, onChange, label, hint }: { on: boolean; onChange: (v: boolean) => void; label: string; hint?: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 py-2 border-t border-white/[0.04] first:border-t-0">
+      <div className="min-w-0">
+        <span className="text-[11px] text-white/75 font-semibold tracking-wide block">{label}</span>
+        {hint && <span className="text-[10px] text-white/35 block leading-snug">{hint}</span>}
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        aria-label={label}
+        onClick={() => onChange(!on)}
+        className={`shrink-0 w-9 h-5 rounded-full transition-all relative border border-white/[0.06] shadow-inner ${on ? "bg-[#4A90D9] border-[#4A90D9]/20" : "bg-white/5 hover:bg-white/10"}`}
+      >
+        <div className={`absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all duration-300 ease-out shadow-[0_1px_3px_rgba(0,0,0,0.4)] ${on ? "left-[17px] bg-[#030712]" : "left-0.5 bg-white/60"}`} />
+      </button>
+    </div>
+  );
+}
 
-  // ── Close dropdowns on outside click ──
-  useEffect(() => {
-    const handleClick = (e: MouseEvent) => {
-      if (viewDropdownRef.current && !viewDropdownRef.current.contains(e.target as HTMLElement)) {
-        setViewDropdownOpen(false);
-      }
-      if (groupByDropdownRef.current && !groupByDropdownRef.current.contains(e.target as HTMLElement)) {
-        setGroupByDropdownOpen(false);
-      }
-      if (viewMenuRef.current && !viewMenuRef.current.contains(e.target as HTMLElement)) {
-        setViewMenuId(null);
-      }
-    };
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, []);
+/** Text input that commits on blur / Enter (Esc cancels) so typing does not create an undo step per key. */
+function CommitInput({ value, onCommit, placeholder, list, mono, className }: { value: string; onCommit: (v: string) => void; placeholder?: string; list?: string; mono?: boolean; className?: string }) {
+  const [v, setV] = useState(value);
+  const cancel = useRef(false);
+  useEffect(() => setV(value), [value]);
+  return (
+    <input
+      value={v}
+      list={list}
+      placeholder={placeholder}
+      onChange={(e) => setV(e.target.value)}
+      onBlur={() => {
+        if (cancel.current) cancel.current = false;
+        else if (v !== value) onCommit(v);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        if (e.key === "Escape") {
+          cancel.current = true;
+          setV(value);
+          (e.target as HTMLInputElement).blur();
+        }
+        e.stopPropagation();
+      }}
+      className={`${inputCls} ${mono ? "font-mono" : ""} ${className || ""}`}
+    />
+  );
+}
 
-  // ── Table Nodes ──
-  const tableNodes = nodes.filter(n => n.type === "tableMode");
+function CommitTextarea({ value, onCommit, placeholder, rows = 3 }: { value: string; onCommit: (v: string) => void; placeholder?: string; rows?: number }) {
+  const [v, setV] = useState(value);
+  useEffect(() => setV(value), [value]);
+  return (
+    <textarea
+      value={v}
+      rows={rows}
+      placeholder={placeholder}
+      onChange={(e) => setV(e.target.value)}
+      onBlur={() => v !== value && onCommit(v)}
+      onKeyDown={(e) => e.stopPropagation()}
+      className={`${inputCls} resize-none p-scrollbar`}
+    />
+  );
+}
 
-  // Filter by search
-  const filtered = tableNodes.filter(n => {
-    const label = (n.data.label as string).toLowerCase();
-    const schema = ((n.data.schema as string) || "public").toLowerCase();
-    const group = ((n.data.group as string) || "").toLowerCase();
-    const q = searchQuery.toLowerCase();
-    return label.includes(q) || schema.includes(q) || group.includes(q);
-  });
+function Swatches({ value, onChange }: { value: string; onChange: (hex: string, final: boolean) => void }) {
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap">
+      {PALETTE.map((hex) => {
+        const selected = value.toLowerCase() === hex.toLowerCase();
+        return (
+          <button
+            key={hex}
+            type="button"
+            title={hex}
+            aria-label={`Colour ${hex}`}
+            onClick={() => onChange(selected ? "" : hex, true)}
+            className={`w-5 h-5 rounded-full border-2 transition-all ${selected ? "border-white scale-110 shadow-[0_0_10px_rgba(255,255,255,0.3)]" : "border-white/10 hover:border-white/40 hover:scale-105"}`}
+            style={{ backgroundColor: hex }}
+          />
+        );
+      })}
+      <label className="relative w-5 h-5 rounded-full border border-dashed border-white/25 hover:border-white/50 flex items-center justify-center cursor-pointer overflow-hidden transition-all" title="Custom colour">
+        <input
+          type="color"
+          value={/^#[0-9a-f]{6}$/i.test(value) ? value : "#6a5fc1"}
+          onChange={(e) => onChange(e.target.value, false)}
+          onBlur={() => onChange(value, true)}
+          className="absolute inset-0 opacity-0 cursor-pointer scale-150"
+        />
+        <span className="text-[10px] text-white/40 pointer-events-none">+</span>
+      </label>
+      {value && (
+        <button type="button" title="Clear colour" onClick={() => onChange("", true)} className="w-5 h-5 rounded-full border border-dashed border-white/20 text-[9px] text-white/35 hover:text-white/70 hover:border-white/40 transition-all">
+          ✕
+        </button>
+      )}
+    </div>
+  );
+}
 
-  // ── Grouping ──
-  const grouped: Record<string, Node[]> = {};
-  filtered.forEach(n => {
-    let key: string;
-    if (groupBy === "schema") {
-      key = (n.data.schema as string) || "public";
-    } else {
-      key = (n.data.group as string) || "Ungrouped";
-    }
-    if (!grouped[key]) grouped[key] = [];
-    grouped[key].push(n);
-  });
+// ───────────────────────── INSPECT: shared shell ─────────────────────────
+// One anatomy for every selection kind — icon + kind + live label, an "identity" card for the fields you
+// touch most, contextual content, rarely-used fields tucked behind "Advanced", and a footer for the one
+// destructive action. Consistency here is what makes the panel scannable: you learn it once.
 
-  const sortedGroupKeys = Object.keys(grouped).sort((a, b) => {
-    if (a === "Ungrouped") return 1;
-    if (b === "Ungrouped") return -1;
-    return a.localeCompare(b);
-  });
+/** Icon + kind + live label at the top of every Inspect view, so the selection is confirmed at a glance. */
+function PanelHeader({ icon, kind, label }: { icon: React.ReactNode; kind: string; label: string }) {
+  return (
+    <div className="flex items-center gap-2.5 pb-3 border-b border-white/[0.06]">
+      <div className="w-8 h-8 rounded-lg bg-[#4A90D9]/10 border border-[#4A90D9]/20 flex items-center justify-center text-[#4A90D9] shrink-0">{icon}</div>
+      <div className="min-w-0">
+        <div className="text-[9.5px] uppercase tracking-wider font-bold text-white/40 leading-none mb-0.5">{kind}</div>
+        <div className="text-[13px] font-semibold text-white/90 truncate leading-tight" title={label}>
+          {label || "—"}
+        </div>
+      </div>
+    </div>
+  );
+}
 
-  // ── Visibility Helpers ──
-  const toggleTableVisibility = (tableId: string) => {
-    const targetNode = nodes.find(n => n.id === tableId);
-    if (!targetNode) return;
-    const nextHidden = !targetNode.hidden;
+/** Groups related fields into one card. An untitled group is the subject's "identity" — its primary fields. */
+function FieldGroup({ title, children }: { title?: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-2.5 bg-white/[0.02] border border-white/[0.06] rounded-xl p-3">
+      {title && <span className="text-[10px] uppercase tracking-wider font-bold text-white/40 block">{title}</span>}
+      {children}
+    </div>
+  );
+}
 
-    setNodes((nds: Node[]) => nds.map((n: Node) =>
-      n.id === tableId ? { ...n, hidden: nextHidden } : n
-    ));
-    setEdges((eds: Edge[]) => eds.map((e: Edge) => {
-      if (e.source === tableId || e.target === tableId) {
-        if (nextHidden) return { ...e, hidden: true };
-        const otherId = e.source === tableId ? e.target : e.source;
-        const otherNode = nodes.find(nd => nd.id === otherId);
-        return { ...e, hidden: !!otherNode?.hidden };
-      }
-      return e;
-    }));
-    setUnsavedChanges(true);
-    takeSnapshot();
+/** Fields that are rarely touched — collapsed by default so the common case stays scannable. */
+function Disclosure({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="border border-white/[0.06] rounded-xl overflow-hidden">
+      <button type="button" onClick={() => setOpen((o) => !o)} className="w-full flex items-center justify-between gap-2 px-3 py-2.5 bg-white/[0.015] hover:bg-white/[0.035] transition-colors">
+        <span className="text-[11px] font-semibold text-white/65">{title}</span>
+        <span className="flex items-center gap-1.5">
+          {hint && !open && <span className="text-[9.5px] text-white/30 normal-case font-normal">{hint}</span>}
+          {open ? <ChevronDown size={14} className="text-white/40" /> : <ChevronRight size={14} className="text-white/40" />}
+        </span>
+      </button>
+      {open && <div className="p-3 pt-2.5 space-y-3 border-t border-white/[0.06]">{children}</div>}
+    </div>
+  );
+}
+
+/** A small read-only count, e.g. 12 columns. */
+function StatChip({ icon, value, label }: { icon: React.ReactNode; value: number; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1 text-[10px] text-white/40" title={`${value} ${label}`}>
+      {icon}
+      <span className="text-white/70 font-mono font-bold">{value}</span>
+    </span>
+  );
+}
+
+/** The bottom action row (duplicate / delete / ungroup) — always last, set off by a divider. */
+function FooterActions({ children }: { children: React.ReactNode }) {
+  return <div className="flex gap-2 pt-3 border-t border-white/[0.06]">{children}</div>;
+}
+
+// ───────────────────────── ADD TAB ─────────────────────────
+function AddPanel({ ops, onOpenTableEditor }: { ops: Ops; onOpenTableEditor?: (id: string | "new") => void }) {
+  const layout = useLayout();
+
+  // a ready-made table, renamed if the name is taken, merged in where it is and brought into view
+  const addPreset = (dbml: string) => {
+    const api = layout.getCanvasApi();
+    if (!api) return;
+    const { model } = parseDbml(dbml);
+    if (!model.tables.length) return;
+    model.tables[0].name = ops.uniqueName(model.tables[0].name, model.tables[0].schema);
+    const name = model.tables[0].name;
+    api.applyModel(model, { mode: "merge", layout: "keep", fit: false });
+    showToast(`Added table “${name}”`, "success");
+    setTimeout(() => api.focusTable(name), 350);
   };
-
-  const toggleGroupVisibility = (groupNodes: Node[]) => {
-    const allVisible = groupNodes.every(n => !n.hidden);
-    const nextHidden = allVisible;
-    const ids = new Set(groupNodes.map(n => n.id));
-
-    setNodes((nds: Node[]) => nds.map((n: Node) =>
-      ids.has(n.id) ? { ...n, hidden: nextHidden } : n
-    ));
-    setEdges((eds: Edge[]) => eds.map((e: Edge) => {
-      if (ids.has(e.source) || ids.has(e.target)) {
-        if (nextHidden) return { ...e, hidden: true };
-        const srcHidden = ids.has(e.source) ? nextHidden : !!nodes.find(nd => nd.id === e.source)?.hidden;
-        const tgtHidden = ids.has(e.target) ? nextHidden : !!nodes.find(nd => nd.id === e.target)?.hidden;
-        return { ...e, hidden: srcHidden || tgtHidden };
-      }
-      return e;
-    }));
-    setUnsavedChanges(true);
-    takeSnapshot();
-  };
-
-  const showAll = () => {
-    setNodes((nds: Node[]) => nds.map((n: Node) => ({ ...n, hidden: false })));
-    setEdges((eds: Edge[]) => eds.map((e: Edge) => ({ ...e, hidden: false })));
-    setUnsavedChanges(true);
-    takeSnapshot();
-  };
-
-  const toggleGlobalVisibility = () => {
-    const allVisible = tableNodes.every(n => !n.hidden);
-    if (allVisible) {
-      setNodes((nds: Node[]) => nds.map((n: Node) =>
-        n.type === "tableMode" ? { ...n, hidden: true } : n
-      ));
-      setEdges((eds: Edge[]) => eds.map((e: Edge) => ({ ...e, hidden: true })));
-    } else {
-      showAll();
-    }
-    setUnsavedChanges(true);
-    takeSnapshot();
-  };
-
-  // ── Group collapse ──
-  const toggleGroup = (key: string) => {
-    setCollapsedGroups(prev => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  };
-
-  // ── View Management ──
-  const createNewView = () => {
-    const currentHidden = new Set(tableNodes.filter(n => n.hidden).map(n => n.id));
-    const newView: DiagramView = {
-      id: `view-${Date.now()}`,
-      name: `View ${views.length}`,
-      hiddenTableIds: currentHidden,
-      isDefault: false,
-    };
-    setViews(prev => [...prev, newView]);
-    setActiveViewId(newView.id);
-    setRenamingViewId(newView.id);
-    setRenameValue(newView.name);
-    setViewDropdownOpen(false);
-    setUnsavedChanges(false);
-  };
-
-  const switchView = (viewId: string) => {
-    const view = views.find(v => v.id === viewId);
-    if (!view) return;
-    setActiveViewId(viewId);
-    setViewDropdownOpen(false);
-
-    // Apply view visibility
-    setNodes((nds: Node[]) => nds.map((n: Node) => {
-      if (n.type === "tableMode") {
-        return { ...n, hidden: view.hiddenTableIds.has(n.id) };
-      }
-      return n;
-    }));
-    setEdges((eds: Edge[]) => eds.map((e: Edge) => {
-      const srcHidden = view.hiddenTableIds.has(e.source);
-      const tgtHidden = view.hiddenTableIds.has(e.target);
-      return { ...e, hidden: srcHidden || tgtHidden };
-    }));
-    setUnsavedChanges(false);
-    takeSnapshot();
-  };
-
-  const saveCurrentView = () => {
-    const currentHidden = new Set(tableNodes.filter(n => n.hidden).map(n => n.id));
-    setViews(prev => prev.map(v =>
-      v.id === activeViewId ? { ...v, hiddenTableIds: currentHidden } : v
-    ));
-    setUnsavedChanges(false);
-  };
-
-  const resetCurrentView = () => {
-    switchView(activeViewId);
-    setUnsavedChanges(false);
-  };
-
-  const deleteView = (viewId: string) => {
-    if (viewId === "default") return;
-    setViews(prev => prev.filter(v => v.id !== viewId));
-    if (activeViewId === viewId) switchView("default");
-    setViewMenuId(null);
-  };
-
-  const duplicateView = (viewId: string) => {
-    const original = views.find(v => v.id === viewId);
-    if (!original) return;
-    const dup: DiagramView = {
-      id: `view-${Date.now()}`,
-      name: `${original.name} (copy)`,
-      hiddenTableIds: new Set(original.hiddenTableIds),
-      isDefault: false,
-    };
-    setViews(prev => [...prev, dup]);
-    setActiveViewId(dup.id);
-    setViewMenuId(null);
-    setUnsavedChanges(false);
-  };
-
-  const finishRename = (viewId: string) => {
-    if (renameValue.trim()) {
-      setViews(prev => prev.map(v =>
-        v.id === viewId ? { ...v, name: renameValue.trim() } : v
-      ));
-    }
-    setRenamingViewId(null);
-  };
-
-  const visibleCount = tableNodes.filter(n => !n.hidden).length;
-  const totalCount = tableNodes.length;
 
   return (
-    <div className="flex flex-col h-full gap-3">
-      {/* ══════════ VIEW SELECTOR ══════════ */}
-      <div className="relative" ref={viewDropdownRef}>
-        <div className="flex items-center gap-1.5">
-          {/* View selector button */}
-          <button
-            onClick={() => setViewDropdownOpen(!viewDropdownOpen)}
-            className="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg bg-[#4A90D9]/15 border border-[#4A90D9]/25 text-[#4A90D9] hover:bg-[#4A90D9]/20 transition-all text-left"
-          >
-            <Star size={13} className="shrink-0 fill-current" />
-            <span className="text-[12px] font-semibold flex-1 truncate">{activeView.name}</span>
-            <ChevronDown size={14} className={`shrink-0 transition-transform ${viewDropdownOpen ? "rotate-180" : ""}`} />
+    <div className="space-y-5 flex flex-col">
+      <div className="space-y-3">
+        <SectionTitle badge="Table">New table</SectionTitle>
+        {onOpenTableEditor && (
+          <button onClick={() => onOpenTableEditor("new")} className={btnPrimary}>
+            <PlusSquare size={14} /> Open Table Editor
           </button>
+        )}
+        <div className="grid grid-cols-3 gap-1.5">
+          {SINGLE_TABLE_PRESETS.map((p) => (
+            <button key={p.id} onClick={() => addPreset(p.dbml)} className={btnSoft} title={`Add a ready-made “${p.label}” table`}>
+              <Table2 size={11} /> {p.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <p className="text-[10px] text-white/35 leading-snug">
+        Table groups and data lineage have their own panels in the second row (next to Enums); sticky notes are in the bottom toolbar.
+      </p>
+    </div>
+  );
+}
 
-          {/* Three-dot menu for current view */}
-          {!activeView.isDefault && (
-            <div className="relative" ref={viewMenuRef}>
-              <button
-                onClick={() => setViewMenuId(viewMenuId === activeViewId ? null : activeViewId)}
-                className="p-2 rounded-lg border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.05] text-white/40 hover:text-white/70 transition-all"
-              >
-                <MoreVertical size={14} />
-              </button>
-              {viewMenuId === activeViewId && (
-                <div className="absolute right-0 top-full mt-1 bg-[#0D1117] border border-white/[0.08] rounded-lg shadow-xl z-50 py-1 min-w-[140px]">
-                  <button
-                    onClick={() => { setRenamingViewId(activeViewId); setRenameValue(activeView.name); setViewMenuId(null); }}
-                    className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-white/70 hover:bg-white/[0.04] transition-colors"
-                  >
-                    <Pencil size={11} /> Rename
+// ───────────────────────── INSPECT: table ─────────────────────────
+function TableInspector({ node, ops, onOpenTableEditor }: { node: Node; ops: Ops; onOpenTableEditor?: (id: string | "new") => void }) {
+  const layout = useLayout();
+  const { nodes, meta } = ops;
+  const d = node.data as any;
+  const attrs: any[] = d.attributes || [];
+  const indexes: any[] = d.indexes || [];
+  const constraints: any[] = d.constraints || [];
+  const schemas = Array.from(new Set(nodes.filter(isTableNode).map((n) => String((n.data as any).schema || "")).filter(Boolean)));
+  const groups = groupNames(nodes, meta);
+
+  const rename = (value: string) => {
+    const next = value.trim();
+    if (!next || next === d.label) return;
+    if (nodes.some((n) => n.id !== node.id && isTableNode(n) && String((n.data as any).label).toLowerCase() === next.toLowerCase() && String((n.data as any).schema || "") === String(d.schema || ""))) {
+      showToast(`A table named “${next}” already exists`, "error");
+      return;
+    }
+    const old = String(d.label);
+    const oldKey = nodeKey(node);
+    const newKey = nodeKey({ ...node, data: { ...d, label: next } });
+    const nextNodes = nodes.map((n) => {
+      if (n.id === node.id) return { ...n, data: { ...n.data, label: next } };
+      if (!isTableNode(n)) return n;
+      const at: any[] = (n.data as any).attributes || [];
+      return at.some((a) => a.fkRefTable === old) ? { ...n, data: { ...n.data, attributes: at.map((a) => (a.fkRefTable === old ? { ...a, fkRefTable: next } : a)) } } : n;
+    });
+    ops.commit({ nodes: nextNodes, meta: rekeyViews(meta, oldKey, newKey) });
+  };
+
+  const setSchema = (value: string) => {
+    const next = value.trim();
+    if (next === String(d.schema || "")) return;
+    const oldKey = nodeKey(node);
+    const newKey = nodeKey({ ...node, data: { ...d, schema: next } });
+    ops.commit({ nodes: nodes.map((n) => (n.id === node.id ? { ...n, data: { ...n.data, schema: next } } : n)), meta: rekeyViews(meta, oldKey, newKey) });
+  };
+
+  const setGroup = (value: string) => {
+    const next = value.trim();
+    if (next === String(d.group || "")) return;
+    const nextMeta = next && !meta.groups[next] ? { ...meta, groups: { ...meta.groups, [next]: { color: PALETTE[Object.keys(meta.groups).length % PALETTE.length] } } } : meta;
+    // gathered when the frame would otherwise cover other tables; a table leaving a group is moved clear of its frame
+    ops.commit({ nodes: next ? gatherGroup(assignGroup(nodes, [node.id], next), nextMeta, next) : ungroupTables(nodes, [node.id]), meta: nextMeta });
+  };
+
+  const duplicate = () => {
+    const data = JSON.parse(JSON.stringify(d));
+    data.label = ops.uniqueName(`${d.label}_copy`, d.schema);
+    data.spotlightActive = false;
+    // a copy has no relationships, so it must not carry foreign-key badges either
+    data.attributes = (data.attributes || []).map((a: any) => ({ ...a, isFk: false, fkRefTable: "", fkRefField: "" }));
+    const copy: Node = { id: newId("tbl"), type: "tableMode", position: { x: node.position.x + 48, y: node.position.y + 48 }, sourcePosition: node.sourcePosition, targetPosition: node.targetPosition, data };
+    ops.commit({ nodes: [...nodes.map((n) => (n.selected ? { ...n, selected: false } : n)), { ...copy, selected: true }] });
+    showToast(`Duplicated as “${data.label}”`, "success");
+  };
+
+  return (
+    <div className="space-y-4 animate-in fade-in duration-200">
+      <PanelHeader icon={<Table2 size={15} />} kind="Table" label={String(d.label || "")} />
+
+      <FieldGroup>
+        <div>
+          <span className={labelCls}>Name</span>
+          <CommitInput value={String(d.label || "")} onCommit={rename} mono />
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <span className={labelCls}>Schema</span>
+            <CommitInput value={String(d.schema || "")} onCommit={setSchema} placeholder="public" list="sb-schemas" mono />
+            <datalist id="sb-schemas">{schemas.map((s) => <option key={s} value={s} />)}</datalist>
+          </div>
+          <div>
+            <span className={labelCls}>Group</span>
+            <CommitInput value={String(d.group || "")} onCommit={setGroup} placeholder="none" list="sb-groups" />
+            <datalist id="sb-groups">{groups.map((g) => <option key={g} value={g} />)}</datalist>
+          </div>
+        </div>
+        <div>
+          <span className={labelCls}>Header colour</span>
+          <Swatches value={String(d.color || "")} onChange={(hex, final) => ops.patchNode(node.id, { color: hex }, final)} />
+        </div>
+        <div>
+          <span className={labelCls}>Note</span>
+          <CommitTextarea value={String(d.comment || "")} onCommit={(v) => ops.patchNode(node.id, { comment: v })} placeholder="What is this table for?" rows={2} />
+        </div>
+      </FieldGroup>
+
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] uppercase tracking-wider font-bold text-white/40">Columns</span>
+          <div className="flex items-center gap-2.5">
+            <StatChip icon={<Rows3 size={10} />} value={attrs.length} label="columns" />
+            {indexes.length > 0 && <StatChip icon={<Hash size={10} />} value={indexes.length} label="indexes" />}
+            {constraints.length > 0 && <StatChip icon={<ShieldCheck size={10} />} value={constraints.length} label="checks" />}
+          </div>
+        </div>
+        <div className="rounded-lg border border-white/[0.06] divide-y divide-white/[0.04] max-h-[200px] overflow-y-auto p-scrollbar">
+          {attrs.length === 0 ? (
+            <div className="text-xs text-white/30 italic py-3 text-center">No columns defined.</div>
+          ) : (
+            attrs.map((a, i) => (
+              <div key={`${a.name}-${i}`} className="flex items-center gap-2 px-2.5 py-1.5">
+                {a.isPk ? <Key size={11} className="text-yellow-400 shrink-0" /> : <span className="w-[11px] shrink-0" />}
+                <span className="flex-1 text-[11px] text-white/80 font-mono truncate">{a.name}</span>
+                <span className="text-[10px] text-white/35 font-mono truncate max-w-[80px] shrink-0">{a.type}</span>
+                <div className="flex items-center gap-1 shrink-0">
+                  {a.isFk && <span title="Foreign key" className="text-[8.5px] font-bold text-[#4A90D9] bg-[#4A90D9]/10 border border-[#4A90D9]/25 rounded px-1 leading-[14px]">FK</span>}
+                  {a.unique && !a.isPk && <span title="Unique" className="text-[8.5px] font-bold text-emerald-300 bg-emerald-500/10 border border-emerald-500/25 rounded px-1 leading-[14px]">UQ</span>}
+                  {a.allowNull === false && !a.isPk && <span title="Not null" className="text-[8.5px] font-bold text-white/50 bg-white/[0.06] border border-white/10 rounded px-1 leading-[14px]">NN</span>}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      {onOpenTableEditor && (
+        <button onClick={() => onOpenTableEditor(node.id)} className={btnPrimary}>
+          <Pencil size={12} /> Edit columns, keys &amp; indexes
+        </button>
+      )}
+      <div className="grid grid-cols-2 gap-1.5">
+        <button onClick={() => window.dispatchEvent(new CustomEvent("open-sample-data-modal", { detail: { id: node.id } }))} className={btnSoft}>
+          <Table2 size={12} /> Sample data{Array.isArray(d.seedData) && d.seedData.length ? ` (${d.seedData.length})` : ""}
+        </button>
+        <button onClick={() => layout.revealInEditor(String(d.label))} className={btnSoft}>
+          <Code2 size={12} /> Show in DBML
+        </button>
+      </div>
+
+      <FooterActions>
+        <button onClick={duplicate} className={`${btnSoft} flex-1`}>
+          <CopyPlus size={12} /> Duplicate
+        </button>
+        <button
+          onClick={(e) => requestCanvasDelete({ nodeIds: [node.id], anchor: e.currentTarget })}
+          className={`${btnDanger} flex-1`}
+        >
+          <Trash2 size={12} /> Delete
+        </button>
+      </FooterActions>
+    </div>
+  );
+}
+
+// ───────────────────────── INSPECT: relationship ─────────────────────────
+function RefInspector({ edge, ops, onDeselect }: { edge: Edge; ops: Ops; onDeselect: () => void }) {
+  const { nodes, edges } = ops;
+  const parent = nodes.find((n) => n.id === edge.source);
+  const child = nodes.find((n) => n.id === edge.target);
+  const d = (edge.data as any) || {};
+  const type = normalizeRelType(d.relationshipType);
+  const pCol: string = d.sourceColumn || d.referencedKey || "";
+  const cCol: string = d.targetColumn || d.foreignKey || "";
+  const composite = (d.sourceColumns?.length ?? 0) > 1 || (d.targetColumns?.length ?? 0) > 1;
+  const pCols: string[] = (((parent?.data as any)?.attributes as any[]) || []).map((a) => a.name);
+  const cCols: string[] = (((child?.data as any)?.attributes as any[]) || []).map((a) => a.name);
+  const parentLabel = String((parent?.data as any)?.label ?? edge.source);
+  const childLabel = String((child?.data as any)?.label ?? edge.target);
+
+  const patch = (p: Record<string, any>, final = true) => {
+    const next = edges.map((e) => (e.id === edge.id ? { ...e, data: { ...(e.data as any), ...p } } : e));
+    (final ? ops.commit : ops.live)({ edges: next });
+  };
+
+  const setMapping = (which: "parent" | "child", col: string) => {
+    const nextP = which === "parent" ? col : pCol;
+    const nextC = which === "child" ? col : cCol;
+    let nextNodes = nodes;
+    if (child && parent) {
+      const usedElsewhere = (c: string) => edges.some((e) => e.id !== edge.id && !isDepEdge(e) && e.target === child.id && ((e.data as any)?.targetColumn || (e.data as any)?.foreignKey) === c);
+      nextNodes = nodes.map((n) => {
+        if (n.id !== child.id) return n;
+        const at: any[] = (n.data as any).attributes || [];
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            attributes: at.map((a) => {
+              if (a.name === nextC) return { ...a, isFk: true, fkRefTable: String((parent.data as any).label), fkRefField: nextP, fkRelationType: a.fkRelationType || "Many to One" };
+              if (a.name === cCol && !usedElsewhere(cCol)) return { ...a, isFk: false, fkRefTable: "", fkRefField: "" };
+              return a;
+            }),
+          },
+        };
+      });
+    }
+    const nextEdges = edges.map((e) => (e.id === edge.id ? { ...e, data: { ...(e.data as any), sourceColumn: nextP, referencedKey: nextP, targetColumn: nextC, foreignKey: nextC, sourceColumns: undefined, targetColumns: undefined } } : e));
+    ops.commit({ nodes: nextNodes, edges: nextEdges });
+  };
+
+  // confirms by name, deletes (the FK column loses its marking when nothing else uses it), one undo step
+  const remove = (e: React.MouseEvent<HTMLElement>) => requestCanvasDelete({ edgeIds: [edge.id], anchor: e.currentTarget, onDone: (ok) => ok && onDeselect() });
+
+  return (
+    <div className="space-y-4 animate-in fade-in duration-200">
+      <PanelHeader icon={<Link2 size={15} />} kind="Relationship" label={`${parentLabel} → ${childLabel}`} />
+
+      <FieldGroup>
+        <div className="flex items-center justify-between text-[10px] text-white/40">
+          <span>Parent · referenced</span>
+          <span>Child · holds the FK</span>
+        </div>
+        <div className="flex items-center justify-between font-bold font-mono gap-2 text-[12px]">
+          <span className="text-yellow-400 truncate">{parentLabel}{pCol ? `.${pCol}` : ""}</span>
+          <ArrowRight size={12} className="text-[#4A90D9] shrink-0" />
+          <span className="text-sky-400 truncate text-right">{childLabel}{cCol ? `.${cCol}` : ""}</span>
+        </div>
+        <div className="grid grid-cols-3 gap-1.5 pt-0.5">
+          {CARDINALITY.map((c) => (
+            <button key={c.type} title={c.hint} onClick={() => patch({ relationshipType: c.type })} className={`py-2 text-[11px] font-bold border rounded-lg transition-all ${type === c.type ? "bg-[#4A90D9]/15 border-[#4A90D9]/40 text-white shadow-inner" : "bg-white/[0.01] border-white/[0.06] text-white/50 hover:text-white"}`}>
+              {c.label}
+            </button>
+          ))}
+        </div>
+        <p className="text-[10px] text-white/35">{CARDINALITY.find((c) => c.type === type)?.hint}. Many-to-many is exported through a junction table.</p>
+      </FieldGroup>
+
+      <FieldGroup title="Appearance">
+        <div>
+          <span className={labelCls}>Name</span>
+          <CommitInput value={String(d.name || "")} onCommit={(v) => patch({ name: v })} placeholder="fk_orders_users" mono />
+        </div>
+        <div>
+          <span className={labelCls}>Line colour</span>
+          <Swatches value={String(d.color || "")} onChange={(hex, final) => patch({ color: hex }, final)} />
+        </div>
+      </FieldGroup>
+
+      <Disclosure title="Advanced" hint="mapping · actions · optionality">
+        {type !== "many-to-many" && (
+          <div className="space-y-1.5">
+            <span className={labelCls}>Key mapping</span>
+            {composite ? (
+              <p className="text-[10px] text-white/45 bg-white/[0.02] border border-white/[0.05] rounded-lg p-2.5 font-mono">
+                Composite: ({(d.sourceColumns || [pCol]).join(", ")}) → ({(d.targetColumns || [cCol]).join(", ")}). Edit it in the DBML editor.
+              </p>
+            ) : (
+              <div className="grid grid-cols-2 gap-2 bg-[#040810]/40 border border-white/[0.04] p-2.5 rounded-xl">
+                <div>
+                  <span className="text-[9px] text-white/40 uppercase block mb-1">Parent column</span>
+                  <select value={pCol} onChange={(e) => setMapping("parent", e.target.value)} className={selectCls}>
+                    {!pCols.includes(pCol) && <option value={pCol}>{pCol || "—"}</option>}
+                    {pCols.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <span className="text-[9px] text-white/40 uppercase block mb-1">Child column</span>
+                  <select value={cCol} onChange={(e) => setMapping("child", e.target.value)} className={selectCls}>
+                    {!cCols.includes(cCol) && <option value={cCol}>{cCol || "—"}</option>}
+                    {cCols.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {type !== "many-to-many" && (
+          <div className="space-y-1.5">
+            <span className={labelCls}>Referential actions</span>
+            <div className="grid grid-cols-2 gap-2 bg-[#040810]/40 border border-white/[0.04] p-2.5 rounded-xl">
+              {(["onDelete", "onUpdate"] as const).map((k) => (
+                <div key={k}>
+                  <span className="text-[9px] text-white/40 uppercase block mb-1">{k === "onDelete" ? "On delete" : "On update"}</span>
+                  <select value={String(d[k] || "NO ACTION").toUpperCase()} onChange={(e) => patch({ [k]: e.target.value })} className={selectCls}>
+                    {ON_ACTIONS.map((a) => <option key={a} value={a}>{a}</option>)}
+                  </select>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="space-y-1">
+          <span className={labelCls}>Optionality</span>
+          <Toggle on={!!d.optionalSource} onChange={(v) => patch({ optionalSource: v })} label="Parent side optional" hint="A child may exist without a parent (zero-or-one)" />
+          <Toggle on={!!d.optionalTarget} onChange={(v) => patch({ optionalTarget: v })} label="Child side optional" hint="A parent may have no children (zero-or-many)" />
+        </div>
+      </Disclosure>
+
+      <FooterActions>
+        <button onClick={remove} className={`${btnDanger} w-full`}>
+          <Trash2 size={12} /> Delete relationship
+        </button>
+      </FooterActions>
+    </div>
+  );
+}
+
+// ───────────────────────── INSPECT: dependency (lineage) ─────────────────────────
+function DepInspector({ edge, ops, onDeselect }: { edge: Edge; ops: Ops; onDeselect: () => void }) {
+  const { nodes, edges } = ops;
+  const a = nodes.find((n) => n.id === edge.source);
+  const b = nodes.find((n) => n.id === edge.target);
+  const d = (edge.data as any) || {};
+  const cols = (n?: Node): string[] => (((n?.data as any)?.attributes as any[]) || []).map((x) => x.name);
+  const patch = (p: Record<string, any>, final = true) => (final ? ops.commit : ops.live)({ edges: edges.map((e) => (e.id === edge.id ? { ...e, data: { ...(e.data as any), ...p } } : e)) });
+  const aLabel = String((a?.data as any)?.label ?? edge.source);
+  const bLabel = String((b?.data as any)?.label ?? edge.target);
+  return (
+    <div className="space-y-4 animate-in fade-in duration-200">
+      <PanelHeader icon={<GitBranch size={15} />} kind="Data dependency" label={`${aLabel} → ${bLabel}`} />
+
+      <div className="bg-amber-500/[0.05] border border-amber-500/20 p-3 rounded-xl text-xs space-y-1.5">
+        <div className="flex items-center justify-between font-bold font-mono gap-2 text-amber-200">
+          <span className="truncate">{aLabel}</span>
+          <ArrowRight size={12} className="shrink-0 text-amber-400" />
+          <span className="truncate text-right">{bLabel}</span>
+        </div>
+        <p className="text-[10px] text-white/40">Data flows from the upstream table to the downstream table.</p>
+      </div>
+
+      <FieldGroup title="Columns">
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <span className="text-[9px] text-white/40 uppercase block mb-1">Upstream</span>
+            <select value={String(d.fromColumn || "")} onChange={(e) => patch({ fromColumn: e.target.value })} className={selectCls}>
+              <option value="">any</option>
+              {cols(a).map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div>
+            <span className="text-[9px] text-white/40 uppercase block mb-1">Downstream</span>
+            <select value={String(d.toColumn || "")} onChange={(e) => patch({ toColumn: e.target.value })} className={selectCls}>
+              <option value="">any</option>
+              {cols(b).map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+        </div>
+      </FieldGroup>
+
+      <FieldGroup title="Appearance">
+        <div>
+          <span className={labelCls}>Note</span>
+          <CommitTextarea value={String(d.note || "")} onCommit={(v) => patch({ note: v })} placeholder="How is it transformed?" rows={2} />
+        </div>
+        <div>
+          <span className={labelCls}>Colour</span>
+          <Swatches value={String(d.color || "")} onChange={(hex, final) => patch({ color: hex }, final)} />
+        </div>
+      </FieldGroup>
+
+      <FooterActions>
+        <button onClick={(e) => requestCanvasDelete({ edgeIds: [edge.id], anchor: e.currentTarget, onDone: (ok) => ok && onDeselect() })} className={`${btnDanger} w-full`}>
+          <Trash2 size={12} /> Delete dependency
+        </button>
+      </FooterActions>
+    </div>
+  );
+}
+
+// ───────────────────────── INSPECT: sticky note ─────────────────────────
+function NoteInspector({ node, ops, onDeselect }: { node: Node; ops: Ops; onDeselect: () => void }) {
+  const d = node.data as any;
+  const idx = typeof d.colorIndex === "number" ? d.colorIndex : 0;
+  const preview = String(d.text || "").trim();
+  return (
+    <div className="space-y-4 animate-in fade-in duration-200">
+      <PanelHeader icon={<StickyNote size={15} />} kind="Sticky note" label={preview ? preview.slice(0, 40) : "Empty note"} />
+
+      <FieldGroup>
+        <div>
+          <span className={labelCls}>Text</span>
+          <CommitTextarea value={String(d.text || "")} onCommit={(v) => ops.patchNode(node.id, { text: v })} rows={5} />
+        </div>
+        <div>
+          <span className={labelCls}>Colour</span>
+          <div className="flex gap-2">
+            {NOTE_COLORS.map((hex, i) => (
+              <button key={hex} onClick={() => ops.patchNode(node.id, { colorIndex: i })} className={`w-6 h-6 rounded-md border-2 transition-all ${idx % NOTE_COLORS.length === i ? "border-white scale-110" : "border-white/10 hover:border-white/40"}`} style={{ backgroundColor: hex }} aria-label={`Note colour ${i + 1}`} />
+            ))}
+          </div>
+        </div>
+      </FieldGroup>
+
+      <FooterActions>
+        <button onClick={(e) => requestCanvasDelete({ nodeIds: [node.id], anchor: e.currentTarget, onDone: (ok) => ok && onDeselect() })} className={`${btnDanger} w-full`}>
+          <Trash2 size={12} /> Delete note
+        </button>
+      </FooterActions>
+    </div>
+  );
+}
+
+// ───────────────────────── INSPECT: table group frame ─────────────────────────
+function GroupInspector({ name, ops, onSelect, onDeselect }: { name: string; ops: Ops; onSelect: (id: string) => void; onDeselect: () => void }) {
+  const { nodes, meta } = ops;
+  const gm = meta.groups[name] || {};
+  const members = nodes.filter((n) => isTableNode(n) && (n.data as any).group === name);
+
+  const setGm = (patch: Partial<typeof gm>, final = true) => {
+    const next: typeof gm = { ...gm, ...patch };
+    if (!next.color) delete next.color;
+    if (!next.note) delete next.note;
+    if (!next.collapsed) delete next.collapsed;
+    (final ? ops.commit : ops.live)({ meta: { ...meta, groups: { ...meta.groups, [name]: next } } });
+  };
+
+  const rename = (value: string) => {
+    const next = value.trim();
+    if (!next || next === name) return;
+    if (groupNames(nodes, meta).some((g) => g.toLowerCase() === next.toLowerCase())) return showToast(`A group named “${next}” already exists`, "error");
+    const { [name]: cur, ...rest } = meta.groups;
+    ops.commit({
+      nodes: nodes.map((n) => (isTableNode(n) && (n.data as any).group === name ? { ...n, data: { ...n.data, group: next } } : n)),
+      meta: { ...meta, groups: { ...rest, [next]: cur || {} }, views: meta.views.map((v) => ({ ...v, groups: v.groups.map((g) => (g === name ? next : g)) })) },
+    });
+    onSelect(`${GROUP_NODE_PREFIX}${next}`);
+  };
+
+  const ungroup = (e: React.MouseEvent<HTMLElement>) => requestCanvasDelete({ group: name, anchor: e.currentTarget, onDone: (ok) => ok && onDeselect() });
+
+  return (
+    <div className="space-y-4 animate-in fade-in duration-200">
+      <PanelHeader icon={<Group size={15} />} kind="Table group" label={name} />
+
+      <FieldGroup>
+        <div>
+          <span className={labelCls}>Name</span>
+          <CommitInput value={name} onCommit={rename} />
+        </div>
+        <div>
+          <span className={labelCls}>Colour</span>
+          <Swatches value={gm.color || ""} onChange={(hex, final) => setGm({ color: hex || undefined }, final)} />
+        </div>
+        <div>
+          <span className={labelCls}>Note</span>
+          <CommitTextarea value={gm.note || ""} onCommit={(v) => setGm({ note: v || undefined })} placeholder="What does this module cover?" rows={2} />
+        </div>
+      </FieldGroup>
+
+      <div className="bg-white/[0.02] border border-white/[0.06] rounded-xl px-3 py-1">
+        <Toggle on={!!gm.collapsed} onChange={(v) => setGm({ collapsed: v || undefined })} label="Collapse to a single card" hint="Relationships stay connected to the card" />
+      </div>
+
+      <div className="space-y-1.5">
+        <span className="text-[10px] uppercase tracking-wider font-bold text-white/40">Tables ({members.length})</span>
+        <div className="rounded-lg border border-white/[0.06] divide-y divide-white/[0.04] max-h-[180px] overflow-y-auto p-scrollbar">
+          {members.map((n) => (
+            <button key={n.id} onClick={() => ops.focus(n.id)} className="w-full flex items-center gap-2 text-left px-2.5 py-1.5 hover:bg-white/[0.04] transition-colors">
+              <Table2 size={11} className="text-white/40 shrink-0" />
+              <span className="text-[11px] font-mono text-white/80 truncate">{String((n.data as any).label)}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <FooterActions>
+        <button onClick={ungroup} className={`${btnDanger} w-full`}>
+          <Ungroup size={12} /> Ungroup tables
+        </button>
+      </FooterActions>
+    </div>
+  );
+}
+
+// ───────────────────────── INSPECT: nothing selected → workspace settings ─────────────────────────
+function SettingsPanel({ ops, showGrid, setShowGrid, sqlDialect, setSqlDialect, onAutoLayout }: { ops: Ops; showGrid: boolean; setShowGrid: (v: boolean) => void; sqlDialect: string; setSqlDialect: (d: string) => void; onAutoLayout: () => void }) {
+  const layout = useLayout();
+  const { meta } = ops;
+  const [selectedFont, setSelectedFont] = useState("Vagnola Regular");
+  const [nodeOpacity, setNodeOpacity] = useState(100);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--node-font", selectedFont === "Vagnola Regular" ? "Vagnola, sans-serif" : `${selectedFont}, sans-serif`);
+    root.style.setProperty("--node-opacity", String(nodeOpacity / 100));
+  }, [selectedFont, nodeOpacity]);
+
+  const setDatabase = (id: string) => {
+    setSqlDialect(id);
+    const dbml = SQL_DIALECTS.find((x) => x.id === id)?.dbmlName;
+    ops.commit({ meta: { ...meta, project: { ...meta.project, databaseType: dbml } } });
+  };
+
+  return (
+    <div className="space-y-4 animate-in fade-in duration-200">
+      {/* Inspect's primary job is editing a selection — when there isn't one, say so first and keep it the
+          most prominent thing on screen. Diagram-wide settings are still one scroll away, just visually secondary. */}
+      <div className="flex flex-col items-center text-center gap-2 py-6 px-3 rounded-xl border border-dashed border-white/[0.1] bg-white/[0.015]">
+        <div className="w-9 h-9 rounded-full bg-white/[0.05] border border-white/[0.08] flex items-center justify-center text-white/45">
+          <MousePointerClick size={16} />
+        </div>
+        <p className="text-[12px] font-semibold text-white/70">Nothing selected</p>
+        <p className="text-[11px] text-white/40 leading-snug max-w-[230px]">Click a table, relationship, note or group frame on the canvas to inspect and edit it here.</p>
+      </div>
+
+      <div className="flex items-center gap-2 pt-1">
+        <Settings size={11} className="text-white/35 shrink-0" />
+        <span className="text-[10px] uppercase tracking-wider font-bold text-white/35">Diagram settings</span>
+        <div className="h-px flex-1 bg-white/[0.06]" />
+      </div>
+
+      <FieldGroup>
+        <div>
+          <span className={labelCls}>Project name</span>
+          <CommitInput value={meta.project.name || ""} onCommit={(v) => ops.commit({ meta: { ...meta, project: { ...meta.project, name: v || undefined } } })} placeholder="My schema" />
+        </div>
+        <div>
+          <span className={labelCls}>Database</span>
+          <select value={sqlDialect} onChange={(e) => setDatabase(e.target.value)} className={selectCls}>
+            {SQL_DIALECTS.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
+          </select>
+          <p className="text-[10px] text-white/35 mt-1">Drives data-type suggestions and the generated SQL.</p>
+        </div>
+        <div>
+          <span className={labelCls}>Project note</span>
+          <CommitTextarea value={meta.project.note || ""} onCommit={(v) => ops.commit({ meta: { ...meta, project: { ...meta.project, note: v || undefined } } })} placeholder="Describe the diagram…" rows={2} />
+        </div>
+      </FieldGroup>
+
+      <FieldGroup title="Display">
+        <Toggle on={meta.showRelationships} onChange={(v) => ops.commit({ meta: { ...meta, showRelationships: v } })} label="Show relationships" hint="Hide every line for a cleaner view" />
+        <Toggle on={meta.showHubEdges} onChange={(v) => ops.commit({ meta: { ...meta, showHubEdges: v } })} label="Show hub connections" hint="Lines to tables nearly everything references (tenants, users). Off: a badge on each table instead" />
+        <Toggle on={showGrid} onChange={setShowGrid} label="Show grid" />
+      </FieldGroup>
+
+      <FieldGroup title="Canvas style">
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] text-white/70 font-semibold tracking-wide">Table opacity</span>
+            <span className="text-[10px] text-[#C9C8C7] font-mono font-bold bg-[#4A90D9]/10 border border-[#4A90D9]/20 px-1.5 py-0.5 rounded">{nodeOpacity}%</span>
+          </div>
+          <input type="range" min="30" max="100" value={nodeOpacity} onChange={(e) => setNodeOpacity(parseInt(e.target.value))} className="w-full accent-[#4A90D9] h-1 bg-white/10 rounded-lg cursor-pointer appearance-none outline-none" />
+        </div>
+        <div>
+          <span className={labelCls}>Table typography</span>
+          <select value={selectedFont} onChange={(e) => setSelectedFont(e.target.value)} className={selectCls}>
+            {FONT_OPTIONS.map((f) => <option key={f} value={f}>{f}</option>)}
+          </select>
+        </div>
+      </FieldGroup>
+
+      <div className="grid grid-cols-2 gap-1.5">
+        <button onClick={onAutoLayout} className={btnSoft}><Layers size={12} /> Auto layout</button>
+        <button onClick={() => layout.openTool("versions")} className={btnSoft}><Check size={12} /> Version history</button>
+        <button onClick={() => layout.openTool("colors")} className={`${btnSoft} col-span-2`} title="Show or hide tables by their header colour"><Palette size={12} /> Colours &amp; visibility</button>
+      </div>
+    </div>
+  );
+}
+
+// ───────────────────────── VIEWS TAB ─────────────────────────
+function ViewsPanel({ ops }: { ops: Ops }) {
+  const { nodes, meta } = ops;
+  const tables = nodes.filter(isTableNode);
+  const selected = tables.filter((n) => n.selected);
+  const [search, setSearch] = useState("");
+  const [groupBy, setGroupBy] = useState<"schema" | "group">("schema");
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [menuId, setMenuId] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const active = activeView(meta);
+  const allKeys = tables.map(nodeKey);
+  const countIn = (v: DiagramViewModel | null) => tables.filter((n) => isTableInView(v, n)).length;
+
+  useEffect(() => {
+    const close = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as HTMLElement)) setMenuId(null);
+    };
+    document.addEventListener("pointerdown", close, true); // capture: the canvas stops mousedown from bubbling
+    return () => document.removeEventListener("pointerdown", close, true);
+  }, []);
+
+  const withMeta = (m: ProjectMeta) => ops.commit({ meta: m });
+  const uniqueViewId = (name: string) => {
+    const base = slugify(name) || `view_${meta.views.length + 1}`;
+    let id = base;
+    let i = 2;
+    while (meta.views.some((v) => v.id === id)) id = `${base}_${i++}`;
+    return id;
+  };
+  const nameTaken = (name: string, exceptId?: string) => name.toLowerCase() === "default" || meta.views.some((v) => v.id !== exceptId && v.name.toLowerCase() === name.toLowerCase());
+
+  const createView = (keys: string[]) => {
+    const name = newName.trim() || `View ${meta.views.length + 1}`;
+    if (nameTaken(name)) return showToast(`A view called “${name}” already exists`, "error");
+    if (!keys.length) return showToast("Add some tables before creating a view", "validate");
+    const id = uniqueViewId(name);
+    withMeta({ ...meta, views: [...meta.views, { id, name, tables: keys, groups: [], schemas: [] }], activeViewId: id });
+    setCreating(false);
+    setNewName("");
+  };
+
+  const updateView = (id: string, patch: Partial<DiagramViewModel>) => withMeta({ ...meta, views: meta.views.map((v) => (v.id === id ? { ...v, ...patch } : v)) });
+
+  const renameView = (id: string) => {
+    const name = renameValue.trim();
+    setRenamingId(null);
+    if (!name) return;
+    if (nameTaken(name, id)) return showToast(`A view called “${name}” already exists`, "error");
+    const nextId = uniqueViewId(name);
+    withMeta({ ...meta, views: meta.views.map((v) => (v.id === id ? { ...v, id: nextId, name } : v)), activeViewId: meta.activeViewId === id ? nextId : meta.activeViewId });
+  };
+
+  const duplicateView = (id: string) => {
+    const src = meta.views.find((v) => v.id === id);
+    if (!src) return;
+    let name = `${src.name} copy`;
+    let i = 2;
+    while (nameTaken(name)) name = `${src.name} copy ${i++}`;
+    const nid = uniqueViewId(name);
+    const keys = tables.filter((n) => isTableInView(src, n)).map(nodeKey);
+    withMeta({ ...meta, views: [...meta.views, { ...src, id: nid, name, tables: keys, groups: [], schemas: [] }], activeViewId: nid });
+    setMenuId(null);
+  };
+
+  const deleteView = async (id: string, anchor: Element) => {
+    const view = meta.views.find((v) => v.id === id);
+    setMenuId(null);
+    const ok = await confirmAction({
+      message: ["You're deleting view ", { strong: view?.name || "this view" }, ". Are you sure?"],
+      detail: "Only the view goes — its tables stay in the diagram.",
+      note: "Ctrl+Z undoes it.",
+      anchor,
+    });
+    if (!ok) return;
+    withMeta({ ...meta, views: meta.views.filter((v) => v.id !== id), activeViewId: meta.activeViewId === id ? null : meta.activeViewId });
+  };
+
+  const visibleKeys = active ? tables.filter((n) => isTableInView(active, n)).map(nodeKey) : allKeys;
+  const setKeys = (keys: string[]) => {
+    if (!active) return;
+    if (!keys.length) return showToast("A view needs at least one table", "validate");
+    updateView(active.id, { tables: keys, groups: [], schemas: [] });
+  };
+  const toggleTable = (n: Node) => {
+    const key = nodeKey(n);
+    setKeys(visibleKeys.includes(key) ? visibleKeys.filter((k) => k !== key) : [...visibleKeys, key]);
+  };
+  const toggleMany = (list: Node[]) => {
+    const keys = list.map(nodeKey);
+    const allOn = keys.every((k) => visibleKeys.includes(k));
+    setKeys(allOn ? visibleKeys.filter((k) => !keys.includes(k)) : Array.from(new Set([...visibleKeys, ...keys])));
+  };
+
+  const q = search.trim().toLowerCase();
+  const filtered = tables.filter((n) => `${(n.data as any).label} ${(n.data as any).schema || ""} ${(n.data as any).group || ""}`.toLowerCase().includes(q));
+  const grouped = new Map<string, Node[]>();
+  for (const n of filtered) {
+    const k = groupBy === "schema" ? String((n.data as any).schema || "public") : String((n.data as any).group || "Ungrouped");
+    grouped.set(k, [...(grouped.get(k) || []), n]);
+  }
+  const sections = Array.from(grouped.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+
+  return (
+    <div className="space-y-4 flex flex-col">
+      <div className="flex justify-between items-center border-b border-white/[0.05] pb-2">
+        <span className="text-[11px] font-sans font-semibold tracking-wider text-white/65 uppercase [font-variant:all-small-caps]">Diagram views</span>
+        <button onClick={() => setCreating((c) => !c)} className="flex items-center gap-1 text-[10px] font-bold text-[#4A90D9] bg-[#4A90D9]/10 border border-[#4A90D9]/25 hover:bg-[#4A90D9]/20 px-2 py-1 rounded-lg transition-all">
+          <Plus size={11} /> New view
+        </button>
+      </div>
+
+      {creating && (
+        <div className="space-y-2 bg-white/[0.02] border border-white/[0.06] rounded-xl p-3">
+          <input autoFocus value={newName} onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") createView(allKeys); if (e.key === "Escape") setCreating(false); e.stopPropagation(); }} placeholder={`View ${meta.views.length + 1}`} className={inputCls} />
+          <div className="grid grid-cols-2 gap-1.5">
+            <button onClick={() => createView(allKeys)} className={btnSoft}>All tables</button>
+            <button onClick={() => createView(selected.map(nodeKey))} disabled={!selected.length} className={btnSoft} title="Select tables on the canvas first">Selected ({selected.length})</button>
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-1.5">
+        <button onClick={() => withMeta({ ...meta, activeViewId: null })} className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl border text-left transition-all ${!active ? "bg-[#4A90D9]/12 border-[#4A90D9]/35 text-white" : "bg-white/[0.02] border-white/[0.05] text-white/70 hover:border-white/[0.15]"}`}>
+          {!active ? <Check size={12} className="text-[#4A90D9] shrink-0" /> : <div className="w-3 shrink-0" />}
+          <span className="text-[12px] font-semibold flex-1 truncate">Default view</span>
+          <span className="text-[10px] text-white/40 font-mono">{tables.length}</span>
+        </button>
+        {meta.views.map((v) => {
+          const isActive = active?.id === v.id;
+          return (
+            <div key={v.id} className="relative">
+              {renamingId === v.id ? (
+                <input autoFocus value={renameValue} onChange={(e) => setRenameValue(e.target.value)} onBlur={() => renameView(v.id)} onKeyDown={(e) => { if (e.key === "Enter") renameView(v.id); if (e.key === "Escape") setRenamingId(null); e.stopPropagation(); }} className={inputCls} />
+              ) : (
+                <div className={`flex items-center gap-2 pl-3 pr-1.5 py-2 rounded-xl border transition-all ${isActive ? "bg-[#4A90D9]/12 border-[#4A90D9]/35 text-white" : "bg-white/[0.02] border-white/[0.05] text-white/70 hover:border-white/[0.15]"}`}>
+                  <button onClick={() => withMeta({ ...meta, activeViewId: v.id })} className="flex items-center gap-2 flex-1 min-w-0 text-left">
+                    {isActive ? <Check size={12} className="text-[#4A90D9] shrink-0" /> : <div className="w-3 shrink-0" />}
+                    <span className="text-[12px] font-semibold truncate">{v.name}</span>
+                    <span className="text-[10px] text-white/40 font-mono ml-auto">{countIn(v)}</span>
                   </button>
-                  <button
-                    onClick={() => duplicateView(activeViewId)}
-                    className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-white/70 hover:bg-white/[0.04] transition-colors"
-                  >
-                    <CopyPlus size={11} /> Duplicate
-                  </button>
-                  <div className="h-px bg-white/[0.06] my-1" />
-                  <button
-                    onClick={() => deleteView(activeViewId)}
-                    className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-red-400 hover:bg-red-400/[0.06] transition-colors"
-                  >
-                    <Trash2 size={11} /> Delete
+                  <button onClick={() => setMenuId(menuId === v.id ? null : v.id)} className="p-1 rounded-md text-white/40 hover:text-white hover:bg-white/[0.06]" aria-label={`Options for ${v.name}`}>
+                    <MoreVertical size={13} />
                   </button>
                 </div>
               )}
-            </div>
-          )}
-        </div>
-
-        {/* View dropdown */}
-        {viewDropdownOpen && (
-          <div className="absolute left-0 right-0 top-full mt-1 bg-[#0D1117] border border-white/[0.08] rounded-lg shadow-xl z-50 py-1 max-h-[200px] overflow-y-auto">
-            {views.map(v => (
-              <button
-                key={v.id}
-                onClick={() => switchView(v.id)}
-                className={`w-full flex items-center gap-2 px-3 py-2 text-[11px] hover:bg-white/[0.04] transition-colors ${v.id === activeViewId ? "text-[#4A90D9]" : "text-white/70"}`}
-              >
-                {v.id === activeViewId ? <Check size={12} className="shrink-0" /> : <div className="w-3" />}
-                <span className="flex-1 text-left truncate">{v.name}</span>
-              </button>
-            ))}
-            <div className="h-px bg-white/[0.06] my-1" />
-            <button
-              onClick={createNewView}
-              className="w-full flex items-center gap-2 px-3 py-2 text-[11px] text-white/60 hover:bg-white/[0.04] hover:text-white/80 transition-colors"
-            >
-              <Plus size={12} className="shrink-0" />
-              <span className="flex-1 text-left">New View</span>
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Rename Inline Input */}
-      {renamingViewId && (
-        <div className="flex items-center gap-1.5">
-          <input
-            autoFocus
-            type="text"
-            value={renameValue}
-            onChange={e => setRenameValue(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter") finishRename(renamingViewId); if (e.key === "Escape") setRenamingViewId(null); }}
-            onBlur={() => finishRename(renamingViewId)}
-            className="flex-1 bg-white/[0.04] border border-[#4A90D9]/30 rounded-lg px-2.5 py-1.5 text-[11px] text-white outline-none focus:border-[#4A90D9]/60 transition-all"
-          />
-        </div>
-      )}
-
-      {/* Save / Reset buttons */}
-      {unsavedChanges && (
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={resetCurrentView}
-            className="flex items-center gap-1 px-2.5 py-1.5 text-[10px] font-medium rounded-lg border border-white/[0.06] bg-white/[0.02] text-white/50 hover:text-white/70 hover:bg-white/[0.04] transition-all"
-          >
-            <RotateCcw size={10} /> Reset
-          </button>
-          <button
-            onClick={saveCurrentView}
-            className="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 text-[10px] font-bold rounded-lg bg-[#4A90D9] text-white hover:bg-[#5BA0E9] transition-all shadow-lg shadow-[#4A90D9]/20"
-          >
-            Save
-          </button>
-        </div>
-      )}
-
-      {/* ══════════ SEARCH ══════════ */}
-      <div className="relative">
-        <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
-        <input
-          type="text"
-          value={searchQuery}
-          onChange={e => setSearchQuery(e.target.value)}
-          placeholder="Search table, schema or group"
-          className="w-full bg-white/[0.03] border border-white/[0.06] rounded-xl pl-9 pr-3 py-2 text-xs text-white placeholder:text-white/25 outline-none focus:border-[#4A90D9]/40 focus:ring-1 focus:ring-[#4A90D9]/20 transition-all"
-        />
-      </div>
-
-      {/* ══════════ GROUP BY ══════════ */}
-      <div className="relative flex items-center gap-2" ref={groupByDropdownRef}>
-        <Layers size={13} className="text-white/35 shrink-0" />
-        <button
-          onClick={() => setGroupByDropdownOpen(!groupByDropdownOpen)}
-          className="flex-1 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/[0.03] border border-white/[0.06] hover:border-white/[0.12] transition-all cursor-pointer"
-        >
-          <span className="text-[11px] text-white/55 font-medium">Group by:</span>
-          <span className="text-[11px] text-white/80 font-semibold flex-1">{groupBy === "schema" ? "Schema" : "Table Group"}</span>
-          <ChevronDown size={12} className={`text-white/35 transition-transform ${groupByDropdownOpen ? "rotate-180" : ""}`} />
-        </button>
-        {/* Global visibility toggle */}
-        <button
-          onClick={toggleGlobalVisibility}
-          className="p-1.5 rounded-lg hover:bg-white/[0.04] transition-colors"
-          title={tableNodes.every(n => !n.hidden) ? "Hide all" : "Show all"}
-        >
-          {tableNodes.every(n => !n.hidden)
-            ? <Eye size={14} className="text-[#4A90D9]" />
-            : <EyeOff size={14} className="text-white/30" />}
-        </button>
-
-        {/* Group-by dropdown */}
-        {groupByDropdownOpen && (
-          <div className="absolute left-5 top-full mt-1 bg-[#0D1117] border border-white/[0.08] rounded-lg shadow-xl z-50 py-1 min-w-[150px]">
-            <button
-              onClick={() => { setGroupBy("schema"); setGroupByDropdownOpen(false); }}
-              className={`w-full flex items-center gap-2 px-3 py-2 text-[11px] hover:bg-white/[0.04] transition-colors ${groupBy === "schema" ? "text-[#4A90D9]" : "text-white/70"}`}
-            >
-              {groupBy === "schema" ? <Check size={12} /> : <div className="w-3" />}
-              Schema
-            </button>
-            <button
-              onClick={() => { setGroupBy("tableGroup"); setGroupByDropdownOpen(false); }}
-              className={`w-full flex items-center gap-2 px-3 py-2 text-[11px] hover:bg-white/[0.04] transition-colors ${groupBy === "tableGroup" ? "text-[#4A90D9]" : "text-white/70"}`}
-            >
-              {groupBy === "tableGroup" ? <Check size={12} /> : <div className="w-3" />}
-              Table Group
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* ══════════ TABLE LIST ══════════ */}
-      <div className="flex-1 space-y-1 overflow-y-auto min-h-0 pr-0.5" style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(255,255,255,0.08) transparent" }}>
-        {sortedGroupKeys.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-12 text-center text-white/25 text-xs italic select-none">
-            <Table2 size={28} className="mb-2 text-white/10" />
-            No tables found.
-          </div>
-        )}
-        {sortedGroupKeys.map(groupKey => {
-          const groupNodes = grouped[groupKey];
-          const isCollapsed = collapsedGroups.has(groupKey);
-          const groupVisibleCount = groupNodes.filter(n => !n.hidden).length;
-          const allGroupVisible = groupNodes.every(n => !n.hidden);
-
-          return (
-            <div key={groupKey} className="rounded-lg border border-white/[0.04] bg-white/[0.008] overflow-hidden">
-              {/* Group Header */}
-              <button
-                onClick={() => toggleGroup(groupKey)}
-                className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-white/[0.02] transition-colors group/ghdr"
-              >
-                {isCollapsed
-                  ? <ChevronRight size={11} className="text-white/35 shrink-0" />
-                  : <ChevronDown size={11} className="text-white/35 shrink-0" />}
-                <Users size={12} className="text-white/35 shrink-0" />
-                <span className="text-[11px] font-semibold text-white/65 flex-1 truncate">{groupKey}</span>
-                <span className="text-[9px] font-mono text-white/25 bg-white/[0.04] px-1.5 py-0.5 rounded-full shrink-0">
-                  {groupVisibleCount}/{groupNodes.length}
-                </span>
-                <button
-                  onClick={e => { e.stopPropagation(); toggleGroupVisibility(groupNodes); }}
-                  className="p-0.5 rounded hover:bg-white/[0.06] transition-colors opacity-60 group-hover/ghdr:opacity-100"
-                  title={allGroupVisible ? "Hide group" : "Show group"}
-                >
-                  {allGroupVisible
-                    ? <Eye size={12} className="text-[#4A90D9]/70" />
-                    : <EyeOff size={12} className="text-white/25" />}
-                </button>
-              </button>
-
-              {/* Table Items */}
-              {!isCollapsed && (
-                <div className="border-t border-white/[0.03]">
-                  {groupNodes
-                    .sort((a, b) => (a.data.label as string).localeCompare(b.data.label as string))
-                    .map(node => {
-                      const isHidden = !!node.hidden;
-                      const schema = (node.data.schema as string) || "public";
-                      const displayName = groupBy === "schema"
-                        ? (node.data.label as string)
-                        : `${schema}.${node.data.label as string}`;
-
-                      return (
-                        <div
-                          key={node.id}
-                          className={`flex items-center gap-2 pl-7 pr-3 py-[5px] group/row hover:bg-white/[0.025] transition-colors cursor-pointer ${
-                            isHidden ? "opacity-35" : ""
-                          }`}
-                        >
-                          <Table2 size={12} className={`shrink-0 ${isHidden ? "text-white/20" : "text-white/40"}`} />
-                          <span
-                            onClick={() => {
-                              if (!isHidden && onFocusNode) onFocusNode(node.id);
-                            }}
-                            className={`text-[11px] flex-1 truncate font-medium transition-colors ${
-                              isHidden
-                                ? "text-white/30 line-through cursor-default"
-                                : "text-white/75 hover:text-[#4A90D9] cursor-pointer"
-                            }`}
-                            title={isHidden ? "Table hidden" : `Click to focus ${node.data.label}`}
-                          >
-                            {displayName}
-                          </span>
-                          <button
-                            onClick={e => { e.stopPropagation(); toggleTableVisibility(node.id); }}
-                            className="p-0.5 rounded-md hover:bg-white/[0.06] transition-all opacity-0 group-hover/row:opacity-100"
-                            title={isHidden ? "Show table" : "Hide table"}
-                          >
-                            {isHidden
-                              ? <EyeOff size={12} className="text-white/30" />
-                              : <Eye size={12} className="text-[#4A90D9]" />}
-                          </button>
-                        </div>
-                      );
-                    })}
+              {menuId === v.id && (
+                <div ref={menuRef} className="absolute right-0 top-full mt-1 z-20 w-36 rounded-xl bg-[#0b1220] border border-white/[0.1] shadow-xl overflow-hidden">
+                  <button onClick={() => { setRenamingId(v.id); setRenameValue(v.name); setMenuId(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-[11px] text-white/80 hover:bg-white/[0.05]"><Pencil size={11} /> Rename</button>
+                  <button onClick={() => duplicateView(v.id)} className="w-full flex items-center gap-2 px-3 py-2 text-[11px] text-white/80 hover:bg-white/[0.05]"><CopyPlus size={11} /> Duplicate</button>
+                  <button onClick={(e) => void deleteView(v.id, e.currentTarget)} className="w-full flex items-center gap-2 px-3 py-2 text-[11px] text-red-400 hover:bg-red-500/10"><Trash2 size={11} /> Delete</button>
                 </div>
               )}
             </div>
@@ -556,27 +1022,82 @@ function DiagramViewsPanel({
         })}
       </div>
 
-      {/* ══════════ BOTTOM ALL TOGGLE ══════════ */}
-      <div className="pt-2 border-t border-white/[0.05]">
-        <button
-          onClick={showAll}
-          className={`w-full flex items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-semibold rounded-lg transition-all ${
-            visibleCount === totalCount
-              ? "bg-[#4A90D9]/15 border border-[#4A90D9]/25 text-[#4A90D9]"
-              : "bg-white/[0.03] border border-white/[0.06] text-white/50 hover:text-white/70 hover:bg-white/[0.05]"
-          }`}
-        >
-          <Eye size={13} />
-          All
-          {visibleCount < totalCount && (
-            <span className="text-[9px] font-mono opacity-60 ml-1">({visibleCount}/{totalCount})</span>
+      <div className="space-y-2.5">
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] font-sans font-semibold tracking-wider text-white/65 uppercase [font-variant:all-small-caps]">{active ? `Tables in “${active.name}”` : "Tables"}</span>
+          {active && (
+            <div className="flex gap-1">
+              <button onClick={() => setKeys(allKeys)} className="text-[9px] font-bold text-[#4A90D9] hover:underline">All</button>
+              <span className="text-white/20">·</span>
+              <button onClick={() => setKeys(selected.map(nodeKey))} disabled={!selected.length} className="text-[9px] font-bold text-[#4A90D9] hover:underline disabled:opacity-30 disabled:no-underline" title="Show only the tables selected on the canvas">Only selected</button>
+            </div>
           )}
-        </button>
+        </div>
+        {!active && <p className="text-[10px] text-white/35 leading-snug">The default view shows every table. Create a view to work with a focused subset — views are saved with the diagram and exported as <code className="text-white/55">DiagramView</code>.</p>}
+        <div className="flex gap-1.5">
+          <div className="relative flex-1">
+            <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-white/30" />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.stopPropagation()} placeholder="Search tables" className={`${inputCls} pl-7`} />
+          </div>
+          <select value={groupBy} onChange={(e) => setGroupBy(e.target.value as any)} className={`${selectCls} !w-[92px] shrink-0`}>
+            <option value="schema">Schema</option>
+            <option value="group">Group</option>
+          </select>
+        </div>
+
+        {tables.length === 0 ? (
+          <p className="text-[11px] text-white/30 italic text-center py-4">No tables yet.</p>
+        ) : (
+          <div className="space-y-2">
+            {sections.map(([name, list]) => {
+              const isCollapsed = collapsed.has(name);
+              const onCount = list.filter((n) => visibleKeys.includes(nodeKey(n))).length;
+              return (
+                <div key={name} className="border border-white/[0.05] rounded-xl overflow-hidden">
+                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-white/[0.02]">
+                    <button onClick={() => setCollapsed((s) => { const nx = new Set(s); if (nx.has(name)) nx.delete(name); else nx.add(name); return nx; })} className="text-white/45 hover:text-white">
+                      {isCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                    </button>
+                    <span className="text-[11px] text-white/80 font-semibold flex-1 truncate">{name}</span>
+                    <span className="text-[9px] text-white/35 font-mono">{onCount}/{list.length}</span>
+                    {active && (
+                      <button onClick={() => toggleMany(list)} className="text-white/45 hover:text-white p-0.5" title={onCount === list.length ? "Hide these tables from the view" : "Show these tables in the view"}>
+                        {onCount === list.length ? <Eye size={12} /> : <EyeOff size={12} />}
+                      </button>
+                    )}
+                  </div>
+                  {!isCollapsed && (
+                    <div className="divide-y divide-white/[0.03]">
+                      {list.map((n) => {
+                        const on = visibleKeys.includes(nodeKey(n));
+                        return (
+                          <div key={n.id} className={`flex items-center gap-2 px-2.5 py-1.5 hover:bg-white/[0.03] transition-colors ${on ? "" : "opacity-45"}`}>
+                            {active ? (
+                              <button onClick={() => toggleTable(n)} className="text-white/45 hover:text-white shrink-0" aria-label={on ? "Hide table from view" : "Show table in view"}>
+                                {on ? <Eye size={12} /> : <EyeOff size={12} />}
+                              </button>
+                            ) : (
+                              <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: String((n.data as any).color || "#4A90D9") }} />
+                            )}
+                            <button onClick={() => ops.focus(n.id)} className="flex-1 min-w-0 text-left text-[11px] font-mono text-white/80 truncate hover:text-white">{String((n.data as any).label)}</button>
+                            <span className="text-[9px] text-white/30 font-mono">{((n.data as any).attributes || []).length}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {sections.length === 0 && <p className="text-[11px] text-white/30 italic text-center py-3">No table matches “{search}”.</p>}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
+// ───────────────────────── SIDEBAR SHELL ─────────────────────────
 export function UnifiedSidebar({
   nodes,
   setNodes,
@@ -589,8 +1110,6 @@ export function UnifiedSidebar({
   showGrid,
   setShowGrid,
   onAutoLayout,
-  onDeleteNode,
-  generatedSql,
   activeTab,
   setActiveTab,
   onClose,
@@ -600,1483 +1119,106 @@ export function UnifiedSidebar({
   onFocusNode,
   onOpenTableEditor,
 }: UnifiedSidebarProps) {
-  
-  // --- ADD TAB STATES ---
-  const [tableName, setTableName] = useState("");
-  const [templateType, setTemplateType] = useState<string>("blank");
-  const [customColumns, setCustomColumns] = useState<NodeAttribute[]>([
-    { name: "id", type: "serial", isPk: true, isFk: false }
-  ]);
-  // View specific fields
-  const [sourceTable, setSourceTable] = useState("");
-  const [expression, setExpression] = useState("");
+  const layout = useLayout();
+  const meta = layout.meta;
 
-  // --- INSPECTOR NODE EDITING STATES ---
-  const [editingAttr, setEditingAttr] = useState<{ idx: number; field: "name" | "type" } | null>(null);
-  const [editValue, setEditValue] = useState("");
-  const [editingNodeName, setEditingNodeName] = useState(false);
-  const [newNodeName, setNewNodeName] = useState("");
-  
-  // Relationship Suggestions State
-  const [relationshipSuggestion, setRelationshipSuggestion] = useState<{
-    sourceNodeId: string;
-    targetNodeId: string;
-    columnName: string;
-  } | null>(null);
-
-  // Helper to find target table based on column naming conventions (e.g. user_id -> users)
-  const findTargetNodeForColumn = (colName: string, currentNodeId: string) => {
-    const match = colName.match(/^(.+?)(?:_id|Id|id)$/);
-    if (!match) return null;
-    const prefix = match[1].toLowerCase();
-    
-    // Pluralization / singularization simplistic checks
-    const candidates = [
-      prefix,
-      prefix + 's',
-      prefix + 'es',
-      prefix.replace(/y$/, 'ies'),
-      prefix.slice(0, -1) // e.g. users -> user
-    ];
-    
-    const found = nodes.find(n => {
-      if (n.id === currentNodeId) return false;
-      const label = (n.data.label as string).toLowerCase();
-      return candidates.includes(label);
-    });
-    
-    return found ? found.id : null;
-  };
-
-  const acceptRelationshipSuggestion = () => {
-    if (!relationshipSuggestion) return;
-    const { sourceNodeId, targetNodeId, columnName } = relationshipSuggestion;
-    
-    // Create connection
-    // Mark source column as FK
-    setNodes((nds: Node[]) => nds.map(n => {
-      if (n.id !== sourceNodeId) return n;
-      const attrs = [...((n.data.attributes as NodeAttribute[]) || [])];
-      const updatedAttrs = attrs.map(attr => {
-        if (attr.name === columnName) {
-          return { ...attr, isFk: true };
-        }
-        return attr;
-      });
-      return { ...n, data: { ...n.data, attributes: updatedAttrs } };
-    }));
-
-    // Create edge
-    const newEdge: Edge = {
-      id: `edge_${sourceNodeId}_to_${targetNodeId}`,
-      source: sourceNodeId,
-      target: targetNodeId,
-      sourceHandle: `${sourceNodeId}-${columnName}`,
-      targetHandle: `${targetNodeId}-id`, // Assume target PK is 'id'
-      type: "custom",
-      data: {
-        relationshipType: "many-to-one",
-        sourceField: columnName,
-        targetField: "id"
-      }
-    };
-    
-    setEdges((eds: Edge[]) => [...eds, newEdge]);
-    setRelationshipSuggestion(null);
-    takeSnapshot();
-  };
-
-  // --- SQL CODE IMPORT STATE ---
-  const [copiedSql, setCopiedSql] = useState(false);
-  const [importSql, setImportSql] = useState("");
-  const [importStatus, setImportStatus] = useState("");
-  const [sqlSubTab, setSqlSubTab] = useState<"preview" | "import">("preview");
-
-  // --- APPEARANCE & GLOBAL SETTINGS STATES ---
-  const [_fontOpen, _setFontOpen] = useState(false);
-  const [selectedFont, setSelectedFont] = useState("Vagnola Regular");
-  const [themeColor, setThemeColor] = useState("#6A5FC1");
-  const [nodeOpacity, setNodeOpacity] = useState(100);
-  const [autoLayout, setAutoLayout] = useState(false);
-
-  // Apply CSS variables for theme
-  useEffect(() => {
-    const root = document.documentElement;
-    root.style.setProperty("--theme-color", themeColor);
-    root.style.setProperty("--node-font", selectedFont === "Vagnola Regular" ? "Vagnola, sans-serif" : `${selectedFont}, sans-serif`);
-    root.style.setProperty("--node-opacity", String(nodeOpacity / 100));
-  }, [themeColor, selectedFont, nodeOpacity]);
-
-  const selectedNode = selectedNodeId ? nodes.find(n => n.id === selectedNodeId) : null;
-  const selectedAttrs = selectedNode ? ((selectedNode.data.attributes as NodeAttribute[]) || []) : [];
-  
-  const selectedEdge = selectedEdgeId ? edges.find(e => e.id === selectedEdgeId) : null;
-
-  // --- HELPERS ---
-  const uniqueName = (base: string) => {
-    const names = nodes.map(n => n.data.label as string);
-    let name = base;
-    let i = 1;
-    while (names.includes(name)) {
-      name = `${base}_${i}`;
-      i++;
-    }
-    return name;
-  };
-
-  const addNode = (label: string, attrs: NodeAttribute[]) => {
-    const offset = nodes.length * 60;
-    const nodeId = crypto.randomUUID ? crypto.randomUUID() : `table_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-    const newNode: Node = {
-      id: nodeId,
-      type: "tableMode",
-      position: { x: 200 + offset, y: 150 + offset },
-      data: { label, icon: "server", attributes: attrs },
-    };
-    setNodes((nds: Node[]) => [...nds, newNode]);
-    if (autoLayout) setTimeout(onAutoLayout, 100);
-    takeSnapshot();
-  };
-
-  // --- ADD TAB FIELD ACTIONS ---
-  const handleAddCustomColumn = () => {
-    setCustomColumns([...customColumns, {
-      name: `field_${customColumns.length + 1}`,
-      type: "varchar(255)",
-      isPk: false,
-      isFk: false
-    }]);
-  };
-
-  const handleUpdateCustomColumn = (idx: number, field: keyof NodeAttribute, val: any) => {
-    const updated = [...customColumns];
-    updated[idx] = { ...updated[idx], [field]: val };
-    setCustomColumns(updated);
-  };
-
-  const handleRemoveCustomColumn = (idx: number) => {
-    setCustomColumns(customColumns.filter((_, i) => i !== idx));
-  };
-
-  const spawnMultiTablePreset = (presetName: string) => {
-    const newNodes: Node[] = [];
-    const newEdges: Edge[] = [];
-    const baseOffset = nodes.length * 60;
-    
-    const createTableObj = (label: string, attrs: NodeAttribute[], xOffset: number, yOffset: number) => {
-      const id = crypto.randomUUID ? crypto.randomUUID() : `table_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-      return {
-        id,
-        type: "tableMode",
-        position: { x: 250 + xOffset + baseOffset, y: 150 + yOffset + baseOffset },
-        data: { label: uniqueName(label), icon: "server", attributes: attrs }
-      };
-    };
-
-    if (presetName === "auth") {
-      const users = createTableObj("users", [
-        { name: "id", type: "serial", isPk: true, isFk: false },
-        { name: "username", type: "varchar(255)", isPk: false, isFk: false },
-        { name: "email", type: "varchar(255)", isPk: false, isFk: false },
-        { name: "password_hash", type: "varchar(255)", isPk: false, isFk: false },
-        { name: "created_at", type: "timestamp", isPk: false, isFk: false }
-      ], 0, 0);
-
-      const roles = createTableObj("roles", [
-        { name: "id", type: "serial", isPk: true, isFk: false },
-        { name: "name", type: "varchar(100)", isPk: false, isFk: false },
-        { name: "description", type: "text", isPk: false, isFk: false }
-      ], 300, 0);
-
-      const permissions = createTableObj("permissions", [
-        { name: "id", type: "serial", isPk: true, isFk: false },
-        { name: "name", type: "varchar(100)", isPk: false, isFk: false },
-        { name: "description", type: "text", isPk: false, isFk: false }
-      ], 300, 300);
-
-      const userRoles = createTableObj("user_roles", [
-        { name: "user_id", type: "integer", isPk: true, isFk: true },
-        { name: "role_id", type: "integer", isPk: true, isFk: true }
-      ], 150, 150);
-
-      const rolePermissions = createTableObj("role_permissions", [
-        { name: "role_id", type: "integer", isPk: true, isFk: true },
-        { name: "permission_id", type: "integer", isPk: true, isFk: true }
-      ], 450, 150);
-
-      newNodes.push(users, roles, permissions, userRoles, rolePermissions);
-
-      newEdges.push(
-        { id: `edge_${userRoles.id}_to_${users.id}`, source: userRoles.id, target: users.id, sourceHandle: `${userRoles.id}-user_id`, targetHandle: `${users.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "user_id", targetField: "id" } },
-        { id: `edge_${userRoles.id}_to_${roles.id}`, source: userRoles.id, target: roles.id, sourceHandle: `${userRoles.id}-role_id`, targetHandle: `${roles.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "role_id", targetField: "id" } },
-        { id: `edge_${rolePermissions.id}_to_${roles.id}`, source: rolePermissions.id, target: roles.id, sourceHandle: `${rolePermissions.id}-role_id`, targetHandle: `${roles.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "role_id", targetField: "id" } },
-        { id: `edge_${rolePermissions.id}_to_${permissions.id}`, source: rolePermissions.id, target: permissions.id, sourceHandle: `${rolePermissions.id}-permission_id`, targetHandle: `${permissions.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "permission_id", targetField: "id" } }
-      );
-    } else if (presetName === "ecommerce") {
-      const users = createTableObj("users", [
-        { name: "id", type: "serial", isPk: true, isFk: false },
-        { name: "email", type: "varchar(255)", isPk: false, isFk: false },
-        { name: "name", type: "varchar(255)", isPk: false, isFk: false }
-      ], 0, 0);
-
-      const products = createTableObj("products", [
-        { name: "id", type: "serial", isPk: true, isFk: false },
-        { name: "name", type: "varchar(255)", isPk: false, isFk: false },
-        { name: "price", type: "decimal(10,2)", isPk: false, isFk: false },
-        { name: "stock", type: "integer", isPk: false, isFk: false }
-      ], 600, 0);
-
-      const orders = createTableObj("orders", [
-        { name: "id", type: "serial", isPk: true, isFk: false },
-        { name: "user_id", type: "integer", isPk: false, isFk: true },
-        { name: "status", type: "varchar(50)", isPk: false, isFk: false },
-        { name: "created_at", type: "timestamp", isPk: false, isFk: false }
-      ], 200, 200);
-
-      const orderItems = createTableObj("order_items", [
-        { name: "id", type: "serial", isPk: true, isFk: false },
-        { name: "order_id", type: "integer", isPk: false, isFk: true },
-        { name: "product_id", type: "integer", isPk: false, isFk: true },
-        { name: "quantity", type: "integer", isPk: false, isFk: false },
-        { name: "price", type: "decimal(10,2)", isPk: false, isFk: false }
-      ], 450, 200);
-
-      newNodes.push(users, products, orders, orderItems);
-
-      newEdges.push(
-        { id: `edge_${orders.id}_to_${users.id}`, source: orders.id, target: users.id, sourceHandle: `${orders.id}-user_id`, targetHandle: `${users.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "user_id", targetField: "id" } },
-        { id: `edge_${orderItems.id}_to_${orders.id}`, source: orderItems.id, target: orders.id, sourceHandle: `${orderItems.id}-order_id`, targetHandle: `${orders.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "order_id", targetField: "id" } },
-        { id: `edge_${orderItems.id}_to_${products.id}`, source: orderItems.id, target: products.id, sourceHandle: `${orderItems.id}-product_id`, targetHandle: `${products.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "product_id", targetField: "id" } }
-      );
-    } else if (presetName === "cms") {
-      const users = createTableObj("users", [
-        { name: "id", type: "serial", isPk: true, isFk: false },
-        { name: "username", type: "varchar(100)", isPk: false, isFk: false },
-        { name: "role", type: "varchar(50)", isPk: false, isFk: false }
-      ], 0, 0);
-
-      const posts = createTableObj("posts", [
-        { name: "id", type: "serial", isPk: true, isFk: false },
-        { name: "author_id", type: "integer", isPk: false, isFk: true },
-        { name: "title", type: "varchar(255)", isPk: false, isFk: false },
-        { name: "content", type: "text", isPk: false, isFk: false },
-        { name: "status", type: "varchar(50)", isPk: false, isFk: false }
-      ], 250, 0);
-
-      const comments = createTableObj("comments", [
-        { name: "id", type: "serial", isPk: true, isFk: false },
-        { name: "post_id", type: "integer", isPk: false, isFk: true },
-        { name: "user_id", type: "integer", isPk: false, isFk: true },
-        { name: "comment", type: "text", isPk: false, isFk: false }
-      ], 125, 250);
-
-      const tags = createTableObj("tags", [
-        { name: "id", type: "serial", isPk: true, isFk: false },
-        { name: "name", type: "varchar(100)", isPk: false, isFk: false }
-      ], 550, 0);
-
-      const postTags = createTableObj("post_tags", [
-        { name: "post_id", type: "integer", isPk: true, isFk: true },
-        { name: "tag_id", type: "integer", isPk: true, isFk: true }
-      ], 400, 200);
-
-      newNodes.push(users, posts, comments, tags, postTags);
-
-      newEdges.push(
-        { id: `edge_${posts.id}_to_${users.id}`, source: posts.id, target: users.id, sourceHandle: `${posts.id}-author_id`, targetHandle: `${users.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "author_id", targetField: "id" } },
-        { id: `edge_${comments.id}_to_${posts.id}`, source: comments.id, target: posts.id, sourceHandle: `${comments.id}-post_id`, targetHandle: `${posts.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "post_id", targetField: "id" } },
-        { id: `edge_${comments.id}_to_${users.id}`, source: comments.id, target: users.id, sourceHandle: `${comments.id}-user_id`, targetHandle: `${users.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "user_id", targetField: "id" } },
-        { id: `edge_${postTags.id}_to_${posts.id}`, source: postTags.id, target: posts.id, sourceHandle: `${postTags.id}-post_id`, targetHandle: `${posts.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "post_id", targetField: "id" } },
-        { id: `edge_${postTags.id}_to_${tags.id}`, source: postTags.id, target: tags.id, sourceHandle: `${postTags.id}-tag_id`, targetHandle: `${tags.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "tag_id", targetField: "id" } }
-      );
-    } else if (presetName === "inventory") {
-      const warehouses = createTableObj("warehouses", [
-        { name: "id", type: "serial", isPk: true, isFk: false },
-        { name: "name", type: "varchar(255)", isPk: false, isFk: false },
-        { name: "location", type: "varchar(255)", isPk: false, isFk: false }
-      ], 0, 0);
-
-      const products = createTableObj("products", [
-        { name: "id", type: "serial", isPk: true, isFk: false },
-        { name: "sku", type: "varchar(100)", isPk: false, isFk: false },
-        { name: "description", type: "text", isPk: false, isFk: false }
-      ], 450, 0);
-
-      const inventoryLevels = createTableObj("inventory_levels", [
-        { name: "warehouse_id", type: "integer", isPk: true, isFk: true },
-        { name: "product_id", type: "integer", isPk: true, isFk: true },
-        { name: "quantity", type: "integer", isPk: false, isFk: false }
-      ], 225, 200);
-
-      const stockMovements = createTableObj("stock_movements", [
-        { name: "id", type: "serial", isPk: true, isFk: false },
-        { name: "product_id", type: "integer", isPk: false, isFk: true },
-        { name: "from_warehouse_id", type: "integer", isPk: false, isFk: true },
-        { name: "to_warehouse_id", type: "integer", isPk: false, isFk: true },
-        { name: "quantity", type: "integer", isPk: false, isFk: false },
-        { name: "moved_at", type: "timestamp", isPk: false, isFk: false }
-      ], 225, 400);
-
-      newNodes.push(warehouses, products, inventoryLevels, stockMovements);
-
-      newEdges.push(
-        { id: `edge_${inventoryLevels.id}_to_${warehouses.id}`, source: inventoryLevels.id, target: warehouses.id, sourceHandle: `${inventoryLevels.id}-warehouse_id`, targetHandle: `${warehouses.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "warehouse_id", targetField: "id" } },
-        { id: `edge_${inventoryLevels.id}_to_${products.id}`, source: inventoryLevels.id, target: products.id, sourceHandle: `${inventoryLevels.id}-product_id`, targetHandle: `${products.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "product_id", targetField: "id" } },
-        { id: `edge_${stockMovements.id}_to_${products.id}`, source: stockMovements.id, target: products.id, sourceHandle: `${stockMovements.id}-product_id`, targetHandle: `${products.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "product_id", targetField: "id" } },
-        { id: `edge_${stockMovements.id}_to_from_${warehouses.id}`, source: stockMovements.id, target: warehouses.id, sourceHandle: `${stockMovements.id}-from_warehouse_id`, targetHandle: `${warehouses.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "from_warehouse_id", targetField: "id" } },
-        { id: `edge_${stockMovements.id}_to_to_${warehouses.id}`, source: stockMovements.id, target: warehouses.id, sourceHandle: `${stockMovements.id}-to_warehouse_id`, targetHandle: `${warehouses.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "to_warehouse_id", targetField: "id" } }
-      );
-    } else if (presetName === "social") {
-      const users = createTableObj("users", [
-        { name: "id", type: "serial", isPk: true, isFk: false },
-        { name: "username", type: "varchar(100)", isPk: false, isFk: false }
-      ], 0, 0);
-
-      const profiles = createTableObj("profiles", [
-        { name: "user_id", type: "integer", isPk: true, isFk: true },
-        { name: "bio", type: "text", isPk: false, isFk: false },
-        { name: "avatar_url", type: "varchar(255)", isPk: false, isFk: false }
-      ], 0, 250);
-
-      const follows = createTableObj("follows", [
-        { name: "follower_id", type: "integer", isPk: true, isFk: true },
-        { name: "following_id", type: "integer", isPk: true, isFk: true }
-      ], 250, 250);
-
-      const posts = createTableObj("posts", [
-        { name: "id", type: "serial", isPk: true, isFk: false },
-        { name: "user_id", type: "integer", isPk: false, isFk: true },
-        { name: "body", type: "text", isPk: false, isFk: false }
-      ], 300, 0);
-
-      const likes = createTableObj("likes", [
-        { name: "user_id", type: "integer", isPk: true, isFk: true },
-        { name: "post_id", type: "integer", isPk: true, isFk: true }
-      ], 450, 150);
-
-      newNodes.push(users, profiles, follows, posts, likes);
-
-      newEdges.push(
-        { id: `edge_${profiles.id}_to_${users.id}`, source: profiles.id, target: users.id, sourceHandle: `${profiles.id}-user_id`, targetHandle: `${users.id}-id`, type: "custom", data: { relationshipType: "one-to-one", sourceField: "user_id", targetField: "id" } },
-        { id: `edge_${follows.id}_to_follower_${users.id}`, source: follows.id, target: users.id, sourceHandle: `${follows.id}-follower_id`, targetHandle: `${users.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "follower_id", targetField: "id" } },
-        { id: `edge_${follows.id}_to_following_${users.id}`, source: follows.id, target: users.id, sourceHandle: `${follows.id}-following_id`, targetHandle: `${users.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "following_id", targetField: "id" } },
-        { id: `edge_${posts.id}_to_${users.id}`, source: posts.id, target: users.id, sourceHandle: `${posts.id}-user_id`, targetHandle: `${users.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "user_id", targetField: "id" } },
-        { id: `edge_${likes.id}_to_user_${users.id}`, source: likes.id, target: users.id, sourceHandle: `${likes.id}-user_id`, targetHandle: `${users.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "user_id", targetField: "id" } },
-        { id: `edge_${likes.id}_to_post_${posts.id}`, source: likes.id, target: posts.id, sourceHandle: `${likes.id}-post_id`, targetHandle: `${posts.id}-id`, type: "custom", data: { relationshipType: "many-to-one", sourceField: "post_id", targetField: "id" } }
-      );
-    }
-
-    setNodes((nds: Node[]) => [...nds, ...newNodes]);
-    setEdges((eds: Edge[]) => [...eds, ...newEdges]);
-    if (autoLayout) setTimeout(onAutoLayout, 100);
-    takeSnapshot();
-  };
-
-  const handleCreateTable = () => {
-    const isMultiTable = ["auth", "ecommerce", "cms", "inventory", "social"].includes(templateType);
-    if (isMultiTable) {
-      spawnMultiTablePreset(templateType);
-      setTableName("");
-      return;
-    }
-
-    if (templateType === "blank" && onOpenTableEditor) {
-      onOpenTableEditor("new");
-      return;
-    }
-
-    let name = uniqueName(tableName.trim() || "new_table");
-    let attrs: NodeAttribute[] = [];
-
-    if (templateType === "blank") {
-      attrs = [...customColumns];
-      if (attrs.length === 0) {
-        attrs.push({ name: "id", type: "serial", isPk: true, isFk: false });
-      }
-    } else if (templateType === "users") {
-      name = uniqueName(tableName.trim() || "users");
-      attrs = [
-        { name: "id", type: "serial", isPk: true, isFk: false },
-        { name: "name", type: "varchar(255)", isPk: false, isFk: false },
-        { name: "email", type: "varchar(255)", isPk: false, isFk: false },
-        { name: "password_hash", type: "varchar(255)", isPk: false, isFk: false },
-        { name: "created_at", type: "timestamp", isPk: false, isFk: false },
-      ];
-    } else if (templateType === "products") {
-      name = uniqueName(tableName.trim() || "products");
-      attrs = [
-        { name: "id", type: "serial", isPk: true, isFk: false },
-        { name: "name", type: "varchar(255)", isPk: false, isFk: false },
-        { name: "price", type: "decimal(10,2)", isPk: false, isFk: false },
-        { name: "stock", type: "integer", isPk: false, isFk: false },
-        { name: "category_id", type: "integer", isPk: false, isFk: true },
-      ];
-    } else if (templateType === "view") {
-      name = uniqueName(tableName.trim() || "computed_view");
-      attrs = [
-        { name: "view_id", type: "serial", isPk: true, isFk: false },
-        { name: "source_table", type: "varchar(100)", isPk: false, isFk: false },
-        { name: "expression", type: "text", isPk: false, isFk: false },
-      ];
-    }
-
-    addNode(name, attrs);
-    
-    // Reset forms
-    setTableName("");
-    setCustomColumns([{ name: "id", type: "serial", isPk: true, isFk: false }]);
-    if (templateType === "view") {
-      setSourceTable("");
-      setExpression("");
-    }
-  };
-
-  // --- ATTRIBUTE CRUD (INSPECTOR) ---
-  const updateAttr = (idx: number, field: string, value: string | boolean) => {
-    if (!selectedNodeId) return;
-    setNodes((nds: Node[]) => nds.map(n => {
-      if (n.id !== selectedNodeId) return n;
-      const attrs = [...((n.data.attributes as NodeAttribute[]) || [])];
-      attrs[idx] = { ...attrs[idx], [field]: value };
-      return { ...n, data: { ...n.data, attributes: attrs } };
-    }));
-
-    // Trigger relationship suggestion if column name is renamed to end in _id
-    if (field === "name" && typeof value === "string") {
-      const targetId = findTargetNodeForColumn(value, selectedNodeId);
-      if (targetId) {
-        // Check if edge already exists
-        const edgeExists = edges.some(e => 
-          (e.source === selectedNodeId && e.target === targetId) ||
-          (e.source === targetId && e.target === selectedNodeId)
-        );
-        if (!edgeExists) {
-          setRelationshipSuggestion({
-            sourceNodeId: selectedNodeId,
-            targetNodeId: targetId,
-            columnName: value
-          });
-        }
-      }
-    }
-    takeSnapshot();
-  };
-
-  const deleteAttr = (idx: number) => {
-    if (!selectedNodeId) return;
-    setNodes((nds: Node[]) => nds.map(n => {
-      if (n.id !== selectedNodeId) return n;
-      const attrs = [...((n.data.attributes as NodeAttribute[]) || [])];
-      attrs.splice(idx, 1);
-      return { ...n, data: { ...n.data, attributes: attrs } };
-    }));
-    takeSnapshot();
-  };
-
-  const addAttr = () => {
-    if (!selectedNodeId) return;
-    setNodes((nds: Node[]) => nds.map(n => {
-      if (n.id !== selectedNodeId) return n;
-      const attrs = [...((n.data.attributes as NodeAttribute[]) || [])];
-      const newAttr = { name: `field_${attrs.length + 1}`, type: "varchar(255)", isPk: false, isFk: false };
-      return { ...n, data: { ...n.data, attributes: [...attrs, newAttr] } };
-    }));
-    takeSnapshot();
-  };
-
-  // --- NODE ACTIONS ---
-  const renameNode = () => {
-    if (!selectedNodeId || !newNodeName.trim()) return;
-    setNodes((nds: Node[]) => nds.map(n =>
-      n.id === selectedNodeId ? { ...n, data: { ...n.data, label: newNodeName } } : n
-    ));
-    setEditingNodeName(false);
-    takeSnapshot();
-  };
-
-  const duplicateNode = () => {
-    if (!selectedNode) return;
-    const name = uniqueName((selectedNode.data.label as string) + "_copy");
-    addNode(name, [...((selectedNode.data.attributes as NodeAttribute[]) || [])]);
-  };
-
-  const deleteNode = () => {
-    if (!selectedNodeId) return;
-    if (onDeleteNode) {
-      onDeleteNode(selectedNodeId);
-    } else {
-      setNodes((nds: Node[]) => nds.filter(n => n.id !== selectedNodeId));
-      setEdges((eds: Edge[]) => eds.filter(e => e.source !== selectedNodeId && e.target !== selectedNodeId));
-      setSelectedNodeId(null);
-    }
-    takeSnapshot();
-  };
-
-  // --- EDGE ACTIONS & RELATIONSHIP EDITING ---
-  const updateEdgeData = (field: string, value: any) => {
-    if (!selectedEdgeId) return;
-    setEdges((eds: Edge[]) => eds.map(e => {
-      if (e.id !== selectedEdgeId) return e;
-      return {
-        ...e,
-        data: {
-          ...e.data,
-          [field]: value
-        }
-      };
-    }));
-    takeSnapshot();
-  };
-
-  const handleRelationshipTypeChange = (type: string) => {
-    updateEdgeData("relationshipType", type);
-  };
-
-  const deleteEdge = () => {
-    if (!selectedEdgeId) return;
-    setEdges((eds: Edge[]) => eds.filter(e => e.id !== selectedEdgeId));
-    setSelectedEdgeId(null);
-    takeSnapshot();
-  };
-
-  // --- SQL IMPORT HANDLER ---
-  const handleImportSql = () => {
-    setImportStatus("");
-    if (!importSql.trim()) {
-      setImportStatus("Error: Please paste a valid SQL DDL script.");
-      return;
-    }
-
-    try {
-      const parsed = parseSqlDdl(importSql);
-      if (parsed.entities.length === 0) {
-        setImportStatus("Error: No CREATE TABLE statements found in parsed SQL.");
+  const ops: Ops = {
+    nodes,
+    edges,
+    meta,
+    commit: (next) => {
+      if (next.nodes) setNodes(next.nodes);
+      if (next.edges) setEdges(next.edges);
+      if (next.meta) layout.setMeta(next.meta);
+      takeSnapshot({ nodes: next.nodes ?? nodes, edges: next.edges ?? edges, meta: next.meta ?? meta });
+    },
+    live: (next) => {
+      if (next.nodes) setNodes(next.nodes);
+      if (next.edges) setEdges(next.edges);
+      if (next.meta) layout.setMeta(next.meta);
+    },
+    snapshot: () => takeSnapshot(),
+    patchNode: (id, patch, snapshot = true) => {
+      const next = nodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...patch } } : n));
+      if (snapshot) ops.commit({ nodes: next });
+      else setNodes(next);
+    },
+    uniqueName: (base, schema) => {
+      const taken = new Set(nodes.filter(isTableNode).filter((n) => String((n.data as any).schema || "") === String(schema || "")).map((n) => String((n.data as any).label).toLowerCase()));
+      let name = base;
+      let i = 2;
+      while (taken.has(name.toLowerCase())) name = `${base}_${i++}`;
+      return name;
+    },
+    focus: (id) => {
+      if (isGroupNodeId(id)) {
+        setSelectedEdgeId(null);
+        setSelectedNodeId(id);
+        setActiveTab("inspector");
         return;
       }
-
-      // 1. Generate table name to UUID map
-      const tableIdMap = new Map<string, string>();
-      parsed.entities.forEach((entity: any) => {
-        const id = crypto.randomUUID ? crypto.randomUUID() : `table_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-        tableIdMap.set(entity.name.toLowerCase(), id);
-      });
-
-      // Convert parsed schema to React Flow nodes and edges
-      const newNodes: Node[] = parsed.entities.map((entity, index) => {
-        const nodeId = tableIdMap.get(entity.name.toLowerCase())!;
-        return {
-          id: nodeId,
-          type: "tableMode",
-          position: { x: 100 + index * 80, y: 100 + index * 60 },
-          data: {
-            label: entity.name,
-            icon: "server",
-            attributes: entity.attributes.map(attr => ({
-              name: attr.name,
-              type: attr.dataType,
-              isPk: attr.isPrimaryKey,
-              isFk: attr.isForeignKey
-            }))
-          }
-        };
-      });
-
-      const newEdges: Edge[] = parsed.relationships.map((rel, index) => {
-        const sourceId = tableIdMap.get(rel.toEntity.toLowerCase());
-        const targetId = tableIdMap.get(rel.fromEntity.toLowerCase());
-        return {
-          id: `e-${Date.now()}-${index}`,
-          source: sourceId || rel.toEntity,
-          target: targetId || rel.fromEntity,
-          type: "crowsFoot",
-          data: {
-            relationshipType: rel.type,
-            sourceColumn: rel.referencedKey || "id",
-            targetColumn: rel.foreignKey
-          }
-        };
-      });
-
-      setNodes(newNodes);
-      setEdges(newEdges);
-      setImportSql("");
-      setImportStatus(`Success: Imported ${newNodes.length} tables and ${newEdges.length} relationships.`);
-      setTimeout(() => setImportStatus(""), 4000);
-      onAutoLayout();
-      takeSnapshot();
-    } catch (err: any) {
-      setImportStatus(`Error: ${err.message || "Failed to parse SQL."}`);
-    }
+      onFocusNode?.(id);
+    },
   };
 
-  // --- COPY SQL HELPERS ---
-  const handleCopySql = () => {
-    navigator.clipboard.writeText(generatedSql);
-    setCopiedSql(true);
-    setTimeout(() => setCopiedSql(false), 2000);
+  const selectedNode = selectedNodeId ? nodes.find((n) => n.id === selectedNodeId) : undefined;
+  const selectedGroup = selectedNodeId && isGroupNodeId(selectedNodeId) ? groupNameFromId(selectedNodeId) : null;
+  const selectedEdge = selectedEdgeId ? edges.find((e) => e.id === selectedEdgeId) : undefined;
+  const deselect = () => {
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
   };
+
+  const tabBtn = (id: "add" | "inspector" | "views", label: string, icon: React.ReactNode, clear: boolean) => (
+    <button
+      onClick={() => {
+        setActiveTab(id);
+        if (clear) deselect();
+      }}
+      className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-semibold rounded-lg transition-all ${activeTab === id ? "bg-[#4A90D9]/20 border border-[#4A90D9]/35 text-white shadow-inner" : "text-white/55 hover:text-white hover:bg-white/[0.05] border border-transparent"}`}
+    >
+      {icon}
+      {label}
+    </button>
+  );
 
   return (
-    <div 
+    // A real side drawer: flush with the right edge, full height of the canvas area, one straight edge with a shadow
+    // (no floating card). The canvas keeps its size and this slides over it.
+    <aside
       id="design-unified-sidebar"
-      className="absolute right-6 top-24 bottom-6 w-[340px] z-40 bg-[#060B15]/90 backdrop-blur-xl border border-white/[0.08] flex flex-col pointer-events-auto rounded-2xl shadow-[0_16px_48px_rgba(0,0,0,0.7)] duration-300 select-none animate-in fade-in slide-in-from-right-4"
+      aria-label="Inspector"
+      style={{ width: INSPECT_DRAWER_WIDTH }}
+      className="absolute right-0 top-0 bottom-0 z-40 max-w-[92vw] flex flex-col bg-[#080C16] border-l border-white/[0.09] shadow-[-18px_0_48px_rgba(0,0,0,0.55)] pointer-events-auto select-none animate-in slide-in-from-right duration-200"
     >
-      {/* Sidebar Tabs */}
-      <div className="flex border-b border-white/[0.06] p-2 gap-1 bg-white/[0.01] rounded-t-2xl shrink-0">
-        <button
-          onClick={() => { setActiveTab("add"); setSelectedNodeId(null); setSelectedEdgeId(null); }}
-          className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-semibold rounded-xl transition-all ${
-            activeTab === "add" 
-              ? "bg-[#4A90D9]/15 border border-[#4A90D9]/30 text-white shadow-inner" 
-              : "text-white/60 hover:text-white hover:bg-white/[0.03] border border-transparent"
-          }`}
-        >
-          <PlusSquare size={13} />
-          Add
-        </button>
-        <button
-          onClick={() => setActiveTab("inspector")}
-          className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-semibold rounded-xl transition-all ${
-            activeTab === "inspector" 
-              ? "bg-[#4A90D9]/15 border border-[#4A90D9]/30 text-white shadow-inner" 
-              : "text-white/60 hover:text-white hover:bg-white/[0.03] border border-transparent"
-          }`}
-        >
-          <Component size={13} />
-          Inspector
-        </button>
-        <button
-          onClick={() => { setActiveTab("views"); setSelectedNodeId(null); setSelectedEdgeId(null); }}
-          className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-semibold rounded-xl transition-all ${
-            activeTab === "views" 
-              ? "bg-[#4A90D9]/15 border border-[#4A90D9]/30 text-white shadow-inner" 
-              : "text-white/60 hover:text-white hover:bg-white/[0.03] border border-transparent"
-          }`}
-        >
-          <Layers size={13} />
-          Views
-        </button>
-        
-        <button 
-          onClick={onClose} 
-          className="p-1.5 text-white/65 hover:text-white hover:bg-white/[0.06] rounded-xl transition-all self-center"
-          aria-label="Close sidebar"
-        >
-          <X size={14} />
+      <div className="flex items-center gap-2 px-3 h-[58px] shrink-0 border-b border-white/[0.07] bg-white/[0.015]">
+        <div className="flex flex-1 items-center gap-1 p-1 rounded-xl bg-white/[0.04] border border-white/[0.05]">
+          {tabBtn("add", "Add", <PlusSquare size={13} />, true)}
+          {tabBtn("inspector", "Inspect", <Component size={13} />, false)}
+          {tabBtn("views", "Views", <Layers size={13} />, true)}
+        </div>
+        <button onClick={onClose} className="p-2 text-white/60 hover:text-white hover:bg-white/[0.07] rounded-lg transition-all shrink-0" aria-label="Close sidebar" title="Close">
+          <X size={16} />
         </button>
       </div>
 
-      {/* Tab Contents */}
-      <div className="flex-1 overflow-y-auto p-5 p-scrollbar flex flex-col gap-5">
-        
-        {/* ==================== ADD TAB ==================== */}
-        {activeTab === "add" && (
-          <div className="space-y-4 flex flex-col">
-            <div className="flex justify-between items-center border-b border-white/[0.05] pb-2">
-              <span className="text-[11px] font-sans font-semibold tracking-wider text-white/65 uppercase [font-variant:all-small-caps]">Add Canvas Table</span>
-              <span className="text-[9px] text-[#4A90D9] bg-[#4A90D9]/10 border border-[#4A90D9]/20 px-1.5 py-0.5 rounded font-mono font-bold uppercase">Builder</span>
-            </div>
+      <div className="flex-1 min-h-0 overflow-y-auto px-5 py-5 p-scrollbar flex flex-col gap-5">
+        {activeTab === "add" && <AddPanel ops={ops} onOpenTableEditor={onOpenTableEditor} />}
 
-            {onOpenTableEditor && (
-              <button
-                onClick={() => onOpenTableEditor("new")}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 text-xs font-bold rounded-xl bg-[#4A90D9] text-white hover:bg-[#5ba0e9] transition-all shadow-lg shadow-[#4A90D9]/15"
-              >
-                <PlusSquare size={14} /> Open Fullscreen Table Editor
-              </button>
-            )}
-
-            <div className="space-y-1.5">
-              <label className="text-[11px] text-white/65 font-sans font-medium tracking-wide">Table Name (presets)</label>
-              <input 
-                value={tableName} 
-                onChange={e => setTableName(e.target.value)} 
-                placeholder="e.g. orders"
-                className="w-full bg-white/[0.02] border border-white/[0.08] rounded-lg px-3 py-2.5 text-xs text-white placeholder:text-white/20 outline-none focus:border-[#4A90D9]/50 focus:bg-white/[0.04] transition-all" 
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-[11px] text-white/65 font-sans font-medium tracking-wide">Insertion Template</label>
-              <div className="relative">
-                <select 
-                  value={templateType} 
-                  onChange={e => setTemplateType(e.target.value)}
-                  className="w-full bg-[#080E18] border border-white/[0.08] rounded-lg px-3 py-2.5 text-xs text-white outline-none appearance-none cursor-pointer focus:border-[#4A90D9]/50 transition-all"
-                >
-                  <option value="blank">Custom Columns Table (use Fullscreen Editor above)</option>
-                  <option value="users">Users Preset (Single Table)</option>
-                  <option value="products">Products Preset (Single Table)</option>
-                  <option value="auth">Auth & RBAC Preset (5 Connected Tables)</option>
-                  <option value="ecommerce">E-commerce Preset (4 Connected Tables)</option>
-                  <option value="cms">Blog & CMS Preset (5 Connected Tables)</option>
-                  <option value="inventory">Inventory Preset (4 Connected Tables)</option>
-                  <option value="social">Social Media Preset (5 Connected Tables)</option>
-                  <option value="view">SQL View (Computed)</option>
-                </select>
-                <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-white/30 text-xs">▼</div>
-              </div>
-            </div>
-
-            {/* Custom Table Builder fields list */}
-            {templateType === "blank" && (
-              <div className="space-y-3 pt-2">
-                <div className="flex justify-between items-center border-b border-white/[0.04] pb-1.5">
-                  <span className="text-[10px] font-sans font-semibold tracking-wider text-white/65 uppercase [font-variant:all-small-caps]">Columns Builder</span>
-                  <button 
-                    onClick={handleAddCustomColumn}
-                    className="text-[10px] text-[#4A90D9] hover:text-[#4A90D9]/80 font-bold bg-[#4A90D9]/5 hover:bg-[#4A90D9]/10 px-2 py-0.5 rounded border border-[#4A90D9]/25 transition-all"
-                  >
-                    + Add Field
-                  </button>
-                </div>
-
-                <div className="space-y-2 max-h-[220px] overflow-y-auto p-scrollbar pr-1">
-                  {customColumns.map((col, idx) => (
-                    <div key={idx} className="flex items-center gap-1.5 bg-white/[0.01] border border-white/[0.04] p-1.5 rounded-xl">
-                      {/* Name */}
-                      <input 
-                        type="text"
-                        value={col.name}
-                        onChange={(e) => handleUpdateCustomColumn(idx, "name", e.target.value)}
-                        placeholder="col_name"
-                        className="flex-1 bg-[#040810] border border-white/[0.08] rounded-lg px-2 py-1 text-[11px] text-white outline-none focus:border-[#4A90D9]/30"
-                      />
-
-                      {/* Type */}
-                      <select
-                        value={col.type}
-                        onChange={(e) => handleUpdateCustomColumn(idx, "type", e.target.value)}
-                        className="w-24 bg-[#040810] border border-white/[0.08] rounded-lg px-1.5 py-1 text-[11px] text-white outline-none"
-                      >
-                        {SQL_TYPES.map(t => (
-                          <option key={t} value={t}>{t}</option>
-                        ))}
-                      </select>
-
-                      {/* PK */}
-                      <button
-                        onClick={() => handleUpdateCustomColumn(idx, "isPk", !col.isPk)}
-                        title="Toggle Primary Key"
-                        className={`p-1 rounded border transition-colors ${
-                          col.isPk 
-                            ? "bg-yellow-400/20 border-yellow-400/40 text-yellow-400" 
-                            : "bg-white/[0.02] border-white/[0.06] text-white/30 hover:text-white"
-                        }`}
-                      >
-                        <Key size={10} />
-                      </button>
-
-                      {/* Trash */}
-                      <button
-                        onClick={() => handleRemoveCustomColumn(idx)}
-                        disabled={customColumns.length === 1}
-                        className="p-1 rounded border border-white/[0.06] text-white/30 hover:text-red-400 hover:border-red-400/20 disabled:opacity-20"
-                      >
-                        <Trash2 size={10} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Calculated view source table selector */}
-            {templateType === "view" && (
-              <>
-                <div className="space-y-1.5">
-                  <label className="text-[11px] text-white/65 font-sans font-medium tracking-wide">Source Table</label>
-                  <div className="relative">
-                    <select 
-                      value={sourceTable} 
-                      onChange={e => setSourceTable(e.target.value)}
-                      className="w-full bg-[#080E18] border border-white/[0.08] rounded-lg px-3 py-2.5 text-xs text-white outline-none appearance-none cursor-pointer focus:border-[#4A90D9]/50"
-                    >
-                      <option value="">Select source table...</option>
-                      {nodes.map(n => (
-                        <option key={n.id} value={n.data.label as string}>
-                          {n.data.label as string}
-                        </option>
-                      ))}
-                    </select>
-                    <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-white/30 text-xs">▼</div>
-                  </div>
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-[11px] text-white/65 font-sans font-medium tracking-wide">Expression / Filter</label>
-                  <textarea 
-                    value={expression} 
-                    onChange={e => setExpression(e.target.value)} 
-                    placeholder="e.g. status = 'active'"
-                    className="w-full bg-white/[0.02] border border-white/[0.08] rounded-lg px-3 py-2.5 text-xs text-white placeholder:text-white/20 outline-none focus:border-[#4A90D9]/50 focus:bg-white/[0.04] transition-all resize-none h-16 p-scrollbar" 
-                  />
-                </div>
-              </>
-            )}
-
-            <button 
-              onClick={handleCreateTable} 
-              className="w-full mt-4 py-2.5 bg-[#4A90D9] text-[#C9C8C7] hover:bg-[#4A90D9]/90 text-[11px] font-bold rounded-lg transition-all shadow-[0_4px_12px_rgba(74,144,217,0.25)] flex items-center justify-center gap-1.5"
-            >
-              <PlusSquare size={13} />
-              {templateType === "view" ? "Create Computed View" : "Spawn Custom Table"}
-            </button>
-
-            <div className="h-px bg-white/[0.06] my-4" />
-
-            <div className="flex justify-between items-center border-b border-white/[0.05] pb-2">
-              <span className="text-[11px] font-sans font-semibold tracking-wider text-white/65 uppercase [font-variant:all-small-caps]">Add Annotations</span>
-              <span className="text-[9px] text-[#4A90D9] bg-[#4A90D9]/10 border border-[#4A90D9]/20 px-1.5 py-0.5 rounded font-mono font-bold uppercase">Note</span>
-            </div>
-
-            <button 
-              onClick={() => {
-                const offset = nodes.length * 60;
-                const nodeId = crypto.randomUUID ? crypto.randomUUID() : `note_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-                const newNote: Node = {
-                  id: nodeId,
-                  type: "stickyNote",
-                  position: { x: 200 + offset, y: 150 + offset },
-                  data: { text: "Double-click to edit...", colorIndex: 0 },
-                };
-                setNodes((nds: any) => [...nds, newNote]);
-                takeSnapshot();
-              }} 
-              className="w-full py-2.5 bg-amber-500/10 border border-amber-500/25 hover:bg-amber-500/20 text-amber-300 text-[11px] font-bold rounded-lg transition-all flex items-center justify-center gap-1.5"
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M15.5 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-8.5L15.5 3z" />
-                <path d="M15 3v6h6" />
-              </svg>
-              Add Sticky Note
-            </button>
-
-            <button 
-              onClick={() => {
-                const offset = nodes.length * 60;
-                const nodeId = crypto.randomUUID ? crypto.randomUUID() : `group_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-                const newGroup: Node = {
-                  id: nodeId,
-                  type: "tableGroup",
-                  position: { x: 150 + offset, y: 100 + offset },
-                  style: { width: 450, height: 350 },
-                  data: { label: "New Module Group", colorIndex: 0 },
-                };
-                setNodes((nds: any) => [...nds, newGroup]);
-                takeSnapshot();
-              }} 
-              className="w-full mt-2 py-2.5 bg-blue-500/10 border border-blue-500/25 hover:bg-blue-500/20 text-blue-300 text-[11px] font-bold rounded-lg transition-all flex items-center justify-center gap-1.5"
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-                <line x1="9" y1="3" x2="9" y2="21" strokeDasharray="3 3" />
-              </svg>
-              Add Table Group
-            </button>
-          </div>
-        )}
-
-        {/* ==================== INSPECTOR TAB ==================== */}
         {activeTab === "inspector" && (
           <div className="space-y-4 flex flex-col">
-            
-            {/* 1. NODE SELECTED */}
-            {selectedNode && (
-              <div className="space-y-4 animate-in fade-in duration-200">
-                <div className="flex justify-between items-center border-b border-white/[0.05] pb-2">
-                  <span className="text-[11px] font-sans font-semibold tracking-wider text-white/65 uppercase [font-variant:all-small-caps]">Table Attributes</span>
-                  <span className="text-[9px] text-[#4A90D9] bg-[#4A90D9]/10 border border-[#4A90D9]/20 px-1.5 py-0.5 rounded font-mono font-bold uppercase">Entity</span>
-                </div>
-
-                <div className="space-y-3 bg-white/[0.01] border border-white/[0.04] p-3 rounded-xl">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <span className="text-[10px] text-white/45 uppercase font-sans tracking-wide block">Physical Table Name</span>
-                      <span className="text-xs text-[#C9C8C7] font-mono font-bold truncate block">
-                        {selectedNode.data.label as string}
-                      </span>
-                    </div>
-                    {onOpenTableEditor && selectedNode.type === "tableMode" && (
-                      <button
-                        onClick={() => onOpenTableEditor(selectedNode.id)}
-                        className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-bold rounded-lg bg-[#4A90D9] text-white hover:bg-[#5ba0e9] transition-all"
-                      >
-                        <Pencil size={11} /> Edit Table
-                      </button>
-                    )}
-                  </div>
-                  <p className="text-[10px] text-white/40 leading-relaxed">
-                    Use the fullscreen Table Editor to manage columns, foreign keys, indexes, and constraints. The right sidebar stays closed while editing.
-                  </p>
-                </div>
-
-                {/* Columns preview (edit via modal) */}
-                <div className="space-y-2">
-                  <div className="flex justify-between items-center border-b border-white/[0.04] pb-1">
-                    <span className="text-[10px] font-sans font-semibold tracking-wider text-white/65 uppercase [font-variant:all-small-caps]">Columns ({selectedAttrs.length})</span>
-                  </div>
-                  <div className="space-y-1 max-h-[140px] overflow-y-auto pr-1 p-scrollbar">
-                    {selectedAttrs.length === 0 ? (
-                      <div className="text-xs text-white/30 italic py-2 text-center">No columns defined.</div>
-                    ) : (
-                      selectedAttrs.map((attr, idx) => (
-                        <div key={idx} className="flex items-center gap-2 bg-white/[0.005] border border-white/[0.04] px-2 py-1.5 rounded-lg">
-                          <span className="flex-1 text-[11px] text-white/70 font-mono truncate">{attr.name}</span>
-                          <span className="text-[10px] text-white/35 font-mono">{attr.type}</span>
-                          {attr.isPk && <Key size={10} className="text-yellow-400 shrink-0" />}
-                          {attr.isFk && <span className="text-[8px] text-[#4A90D9] font-bold">FK</span>}
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-
-                {/* Indexes preview */}
-                <div className="space-y-2 pt-2 border-t border-white/[0.04]">
-                  <div className="flex justify-between items-center pb-1">
-                    <span className="text-[10px] font-sans font-semibold tracking-wider text-white/65 uppercase [font-variant:all-small-caps]">
-                      Indexes ({((selectedNode.data.indexes as any[]) || []).length})
-                    </span>
-                    {onOpenTableEditor && (
-                      <button
-                        onClick={() => onOpenTableEditor(selectedNode.id)}
-                        className="text-[9px] text-[#4A90D9] font-bold hover:underline"
-                      >
-                        + Edit Indexes
-                      </button>
-                    )}
-                  </div>
-                  <div className="space-y-1 max-h-[120px] overflow-y-auto pr-1 p-scrollbar">
-                    {((selectedNode.data.indexes as any[]) || []).length === 0 ? (
-                      <div className="text-xs text-white/30 italic py-1">No indexes defined.</div>
-                    ) : (
-                      ((selectedNode.data.indexes as any[]) || []).map((idxItem: any, i: number) => (
-                        <div key={i} className="flex items-center justify-between bg-white/[0.005] border border-white/[0.04] px-2.5 py-1.5 rounded-lg text-[10px] font-mono text-white/70">
-                          <span className="truncate font-bold text-white/80">{idxItem.name}</span>
-                          <span className="text-white/40">{idxItem.type || 'btree'}</span>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-
-                {/* Constraints preview */}
-                <div className="space-y-2 pt-2 border-t border-white/[0.04]">
-                  <div className="flex justify-between items-center pb-1">
-                    <span className="text-[10px] font-sans font-semibold tracking-wider text-white/65 uppercase [font-variant:all-small-caps]">
-                      Constraints ({((selectedNode.data.constraints as any[]) || []).length})
-                    </span>
-                    {onOpenTableEditor && (
-                      <button
-                        onClick={() => onOpenTableEditor(selectedNode.id)}
-                        className="text-[9px] text-[#4A90D9] font-bold hover:underline"
-                      >
-                        + Edit Constraints
-                      </button>
-                    )}
-                  </div>
-                  <div className="space-y-1 max-h-[120px] overflow-y-auto pr-1 p-scrollbar">
-                    {((selectedNode.data.constraints as any[]) || []).length === 0 ? (
-                      <div className="text-xs text-white/30 italic py-1">No constraints defined.</div>
-                    ) : (
-                      ((selectedNode.data.constraints as any[]) || []).map((chk: any, i: number) => (
-                        <div key={i} className="flex items-center justify-between bg-white/[0.005] border border-white/[0.04] px-2.5 py-1.5 rounded-lg text-[10px] font-mono text-white/70">
-                          <span className="truncate font-bold text-white/80">{chk.name}</span>
-                          <span className="text-white/40">{chk.expression || chk.type || 'CHECK'}</span>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-
-                {/* === Table Color & Domain Group === */}
-                <div className="space-y-3 border-t border-white/[0.05] pt-3">
-                  <span className="text-[10px] font-sans font-semibold tracking-wider text-white/65 uppercase [font-variant:all-small-caps]">Color & Domain Group</span>
-
-                  {/* Color Palette */}
-                  <div className="flex items-center gap-2">
-                    {[
-                      { name: "Lavender",  hex: "#B8A9E8" },
-                      { name: "Emerald",   hex: "#6EE7B7" },
-                      { name: "Coral",     hex: "#FCA5A5" },
-                      { name: "Amber",     hex: "#FCD34D" },
-                      { name: "Sky Blue",  hex: "#7DD3FC" },
-                    ].map((c) => {
-                      const currentColor = (selectedNode.data.color as string) || "";
-                      const isSelected = currentColor === c.hex;
-                      return (
-                        <button
-                          key={c.hex}
-                          title={c.name}
-                          onClick={() => {
-                            setNodes((nds: Node[]) =>
-                              nds.map((n) =>
-                                n.id === selectedNodeId
-                                  ? { ...n, data: { ...n.data, color: isSelected ? "" : c.hex } }
-                                  : n
-                              )
-                            );
-                            takeSnapshot();
-                          }}
-                          className={`w-6 h-6 rounded-full border-2 transition-all duration-200 ${
-                            isSelected
-                              ? "border-white scale-110 shadow-[0_0_10px_rgba(255,255,255,0.3)]"
-                              : "border-white/10 hover:border-white/40 hover:scale-105"
-                          }`}
-                          style={{ backgroundColor: c.hex }}
-                        />
-                      );
-                    })}
-
-                    {/* Custom Color Picker */}
-                    <div className="relative w-6 h-6 rounded-full border border-dashed border-white/20 hover:border-white/40 hover:scale-105 flex items-center justify-center cursor-pointer overflow-hidden transition-all duration-200">
-                      <input
-                        type="color"
-                        value={(selectedNode.data.color as string) || "#6a5fc1"}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setNodes((nds: Node[]) =>
-                            nds.map((n) =>
-                              n.id === selectedNodeId
-                                ? { ...n, data: { ...n.data, color: val } }
-                                : n
-                            )
-                          );
-                        }}
-                        onBlur={() => takeSnapshot()}
-                        className="absolute inset-0 opacity-0 cursor-pointer scale-150"
-                        title="Choose custom color"
-                      />
-                      <span className="text-[10px] text-white/40 pointer-events-none">+</span>
-                    </div>
-
-                    {/* Clear color button */}
-                    {(selectedNode.data.color as string) && (
-                      <button
-                        title="Clear color"
-                        onClick={() => {
-                          setNodes((nds: Node[]) =>
-                            nds.map((n) =>
-                              n.id === selectedNodeId
-                                ? { ...n, data: { ...n.data, color: "" } }
-                                : n
-                            )
-                          );
-                          takeSnapshot();
-                        }}
-                        className="w-6 h-6 rounded-full border border-dashed border-white/20 flex items-center justify-center text-white/30 hover:text-white/60 hover:border-white/40 transition-all text-[10px]"
-                      >
-                        ✕
-                      </button>
-                    )}
-                  </div>
-
-                  {/* Group Label Input */}
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      placeholder="e.g. Auth Module, Billing..."
-                      value={(selectedNode.data.group as string) || ""}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setNodes((nds: Node[]) =>
-                          nds.map((n) =>
-                            n.id === selectedNodeId
-                              ? { ...n, data: { ...n.data, group: val } }
-                              : n
-                          )
-                        );
-                      }}
-                      onBlur={() => takeSnapshot()}
-                      className="flex-1 bg-white/[0.03] border border-white/[0.06] rounded-lg px-2.5 py-1.5 text-[11px] text-white/80 placeholder-white/25 outline-none focus:border-[#4A90D9]/40 transition-colors font-sans"
-                    />
-                  </div>
-                </div>
-
-                {/* Seed Data Section */}
-                <div className="space-y-3 border-t border-white/[0.05] pt-3">
-                  <div className="flex justify-between items-center">
-                    <span className="text-[10px] font-sans font-semibold tracking-wider text-white/65 uppercase [font-variant:all-small-caps]">Seed Data Configuration</span>
-                    <button
-                      onClick={() => {
-                        const newRow = selectedAttrs.reduce((acc, attr) => {
-                          acc[attr.name] = attr.type.includes("int") || attr.type.includes("serial") ? 1 : "";
-                          return acc;
-                        }, {} as any);
-                        
-                        const currentSeed = (selectedNode.data.seedData as any[]) || [];
-                        const updatedSeed = [...currentSeed, newRow];
-                        setNodes((nds: Node[]) => nds.map(n => {
-                          if (n.id === selectedNodeId) {
-                            return { ...n, data: { ...n.data, seedData: updatedSeed } };
-                          }
-                          return n;
-                        }));
-                        takeSnapshot();
-                      }}
-                      className="text-[9px] text-[#4A90D9] font-bold bg-[#4A90D9]/5 hover:bg-[#4A90D9]/10 px-2 py-0.5 rounded transition-all"
-                    >
-                      + Add Row
-                    </button>
-                  </div>
-
-                  {((selectedNode.data.seedData as any[]) || []).length === 0 ? (
-                    <div className="text-[11px] text-white/40 italic text-center py-2 bg-white/[0.01] rounded-lg border border-dashed border-white/5">
-                      No seed data configured for this entity.
-                    </div>
-                  ) : (
-                    <div className="overflow-x-auto border border-white/[0.06] rounded-lg bg-[#040810]/50 max-h-[180px] p-scrollbar">
-                      <table className="w-full text-left text-[10px] border-collapse">
-                        <thead>
-                          <tr className="border-b border-white/[0.06] bg-white/[0.02]">
-                            {selectedAttrs.map(attr => (
-                              <th key={attr.name} className="px-2 py-1.5 font-mono text-white/50 border-r border-white/[0.06] whitespace-nowrap">
-                                {attr.name}
-                              </th>
-                            ))}
-                            <th className="px-2 py-1.5 text-right text-white/50">Actions</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {((selectedNode.data.seedData as any[]) || []).map((row, rowIdx) => (
-                            <tr key={rowIdx} className="border-b border-white/[0.04] hover:bg-white/[0.01]">
-                              {selectedAttrs.map(attr => (
-                                <td key={attr.name} className="px-1 py-1 border-r border-white/[0.04]">
-                                  <input
-                                    type={attr.type.includes("int") || attr.type.includes("serial") ? "number" : "text"}
-                                    value={row[attr.name] !== undefined ? row[attr.name] : ""}
-                                    onChange={(e) => {
-                                      const val = attr.type.includes("int") || attr.type.includes("serial") ? Number(e.target.value) : e.target.value;
-                                      const currentSeed = (selectedNode.data.seedData as any[]) || [];
-                                      const updatedSeed = currentSeed.map((r, idx) => {
-                                        if (idx === rowIdx) {
-                                          return { ...r, [attr.name]: val };
-                                        }
-                                        return r;
-                                      });
-                                      setNodes((nds: Node[]) => nds.map(n => {
-                                        if (n.id === selectedNodeId) {
-                                          return { ...n, data: { ...n.data, seedData: updatedSeed } };
-                                        }
-                                        return n;
-                                      }));
-                                      takeSnapshot();
-                                    }}
-                                    className="w-full min-w-[60px] bg-transparent border-0 outline-none px-1 text-white/80 focus:text-white"
-                                  />
-                                </td>
-                              ))}
-                              <td className="px-2 py-1 text-right">
-                                <button
-                                  onClick={() => {
-                                    const currentSeed = (selectedNode.data.seedData as any[]) || [];
-                                    const updatedSeed = currentSeed.filter((_, idx) => idx !== rowIdx);
-                                    setNodes((nds: Node[]) => nds.map(n => {
-                                      if (n.id === selectedNodeId) {
-                                        return { ...n, data: { ...n.data, seedData: updatedSeed } };
-                                      }
-                                      return n;
-                                    }));
-                                    takeSnapshot();
-                                  }}
-                                  className="text-red-400 hover:text-red-300"
-                                >
-                                  Delete
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-
-                {/* Appearance Swatches & Settings Accordion */}
-                <div className="space-y-3 border-t border-white/[0.05] pt-3">
-                  <span className="text-[10px] font-sans font-semibold tracking-wider text-white/65 uppercase [font-variant:all-small-caps]">Entity Appearance</span>
-                  
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] text-white/65 font-sans font-medium">Color Accent</span>
-                    <div className="flex gap-2">
-                      {THEME_COLORS.map(color => (
-                        <button
-                          key={color.name}
-                          onClick={() => setThemeColor(color.hex)}
-                          className={`w-4 h-4 rounded-full border transition-all ${color.bg} ${
-                            themeColor === color.hex ? "ring-2 ring-white scale-110" : "border-white/20 hover:scale-105"
-                          }`}
-                          title={color.name}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Node Operations */}
-                <div className="flex gap-2 pt-2 border-t border-white/[0.05]">
-                  <button 
-                    onClick={duplicateNode}
-                    className="flex-1 py-2 bg-white/[0.03] border border-white/[0.08] hover:bg-white/[0.06] text-white text-[11px] font-bold rounded-lg transition-all"
-                  >
-                    Duplicate Table
-                  </button>
-                  <button 
-                    onClick={deleteNode}
-                    className="flex-1 py-2 bg-red-500/10 border border-red-500/20 hover:bg-red-500/20 text-red-400 text-[11px] font-bold rounded-lg transition-all"
-                  >
-                    Delete Table
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* 2. EDGE SELECTED */}
-            {selectedEdge && !selectedNode && (
-              <div className="space-y-4 animate-in fade-in duration-200">
-                <div className="flex justify-between items-center border-b border-white/[0.05] pb-2">
-                  <span className="text-[11px] font-sans font-semibold tracking-wider text-white/65 uppercase [font-variant:all-small-caps]">Relationship Details</span>
-                  <span className="text-[9px] text-[#4A90D9] bg-[#4A90D9]/10 border border-[#4A90D9]/20 px-1.5 py-0.5 rounded font-mono font-bold uppercase">Edge</span>
-                </div>
-
-                {/* Connection description */}
-                <div className="bg-[#050913]/60 border border-white/[0.05] p-3 rounded-xl text-xs space-y-2">
-                  <div className="flex items-center justify-between text-white/50 text-[10px]">
-                    <span>Source (Parent)</span>
-                    <span>Target (Child)</span>
-                  </div>
-                  <div className="flex items-center justify-between font-bold text-white font-mono">
-                    <span className="text-yellow-400 truncate max-w-[100px]">{selectedEdge.source}</span>
-                    <ArrowRightLeft size={12} className="text-[#4A90D9] mx-2" />
-                    <span className="text-sky-400 truncate max-w-[100px]">{selectedEdge.target}</span>
-                  </div>
-                </div>
-
-                {/* Relationship Type Selector (Cardinality) */}
-                <div className="space-y-2">
-                  <label className="text-[11px] text-white/65 font-sans font-medium tracking-wide">Cardinality Notation</label>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    {[
-                      { type: "one-to-one", label: "1 : 1 (One-to-One)" },
-                      { type: "one-to-many", label: "1 : N (One-to-Many)" },
-                      { type: "many-to-one", label: "N : 1 (Many-to-One)" },
-                      { type: "many-to-many", label: "N : M (Many-to-Many)" }
-                    ].map(card => {
-                      const currentType = (selectedEdge.data?.relationshipType as string) || "one-to-many";
-                      return (
-                        <button
-                          key={card.type}
-                          onClick={() => handleRelationshipTypeChange(card.type)}
-                          className={`py-2 px-1 text-[10px] font-semibold border rounded-lg transition-all ${
-                            currentType === card.type
-                              ? "bg-[#4A90D9]/15 border-[#4A90D9]/40 text-white shadow-inner"
-                              : "bg-white/[0.01] border-white/[0.06] text-white/50 hover:text-white"
-                          }`}
-                        >
-                          {card.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Column Mappings */}
-                <div className="space-y-2">
-                  <label className="text-[11px] text-white/65 font-sans font-medium tracking-wide">Key Join Mapping</label>
-                  
-                  <div className="space-y-2 bg-[#040810]/40 border border-white/[0.04] p-3 rounded-xl">
-                    {/* Source Column */}
-                    <div className="space-y-1">
-                      <span className="text-[10px] text-white/65 font-mono block">Primary Key (Source)</span>
-                      <select
-                        value={(selectedEdge.data?.sourceColumn as string) || "id"}
-                        onChange={e => updateEdgeData("sourceColumn", e.target.value)}
-                        className="w-full bg-[#050913] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs text-white/80 outline-none"
-                      >
-                        {((nodes.find(n => n.id === selectedEdge.source)?.data.attributes as any[]) || []).map(a => (
-                          <option key={a.name} value={a.name}>{a.name}</option>
-                        ))}
-                      </select>
-                    </div>
-
-                    {/* Target Column */}
-                    <div className="space-y-1">
-                      <span className="text-[10px] text-white/65 font-mono block">Foreign Key (Target)</span>
-                      <select
-                        value={(selectedEdge.data?.targetColumn as string) || ""}
-                        onChange={e => updateEdgeData("targetColumn", e.target.value)}
-                        className="w-full bg-[#050913] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs text-white/80 outline-none"
-                      >
-                        <option value="">Select target column...</option>
-                        {((nodes.find(n => n.id === selectedEdge.target)?.data.attributes as any[]) || []).map(a => (
-                          <option key={a.name} value={a.name}>{a.name}</option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Cascade constraints ON DELETE / ON UPDATE */}
-                <div className="space-y-2 border-t border-white/[0.05] pt-3">
-                  <label className="text-[11px] text-white/65 font-sans font-medium tracking-wide flex items-center gap-1.5">
-                    <Info size={11} className="text-[#4A90D9]/80" />
-                    Referential Integrity Constraints
-                  </label>
-                  
-                  <div className="grid grid-cols-2 gap-2 bg-[#040810]/40 border border-white/[0.04] p-3 rounded-xl">
-                    <div className="space-y-1">
-                      <span className="text-[10px] text-white/45 font-sans uppercase block">ON DELETE</span>
-                      <select
-                        value={(selectedEdge.data?.onDelete as string) || "NO ACTION"}
-                        onChange={e => updateEdgeData("onDelete", e.target.value)}
-                        className="w-full bg-[#050913] border border-white/[0.08] rounded-lg px-1.5 py-1 text-[11px] text-white/70 outline-none"
-                      >
-                        <option value="NO ACTION">NO ACTION</option>
-                        <option value="CASCADE">CASCADE</option>
-                        <option value="SET NULL">SET NULL</option>
-                        <option value="RESTRICT">RESTRICT</option>
-                      </select>
-                    </div>
-
-                    <div className="space-y-1">
-                      <span className="text-[10px] text-white/45 font-sans uppercase block">ON UPDATE</span>
-                      <select
-                        value={(selectedEdge.data?.onUpdate as string) || "NO ACTION"}
-                        onChange={e => updateEdgeData("onUpdate", e.target.value)}
-                        className="w-full bg-[#050913] border border-white/[0.08] rounded-lg px-1.5 py-1 text-[11px] text-white/70 outline-none"
-                      >
-                        <option value="NO ACTION">NO ACTION</option>
-                        <option value="CASCADE">CASCADE</option>
-                        <option value="SET NULL">SET NULL</option>
-                        <option value="RESTRICT">RESTRICT</option>
-                      </select>
-                    </div>
-                  </div>
-                </div>
-
-                <button 
-                  onClick={deleteEdge}
-                  className="w-full py-2 bg-red-500/10 border border-red-500/20 hover:bg-red-500/20 text-red-400 text-[11px] font-bold rounded-lg transition-all"
-                >
-                  Delete Relationship
-                </button>
-              </div>
-            )}
-
-            {/* 3. NOTHING SELECTED - SHOW SETTINGS */}
-            {!selectedNode && !selectedEdge && (
-              <div className="space-y-4 animate-in fade-in duration-200">
-                <div className="flex justify-between items-center border-b border-white/[0.05] pb-2">
-                  <span className="text-[11px] font-sans font-semibold tracking-wider text-white/65 uppercase [font-variant:all-small-caps]">Workspace Settings</span>
-                  <Settings size={13} className="text-white/65" />
-                </div>
-
-                <div className="space-y-3 bg-[#050913]/30 border border-white/[0.04] p-3 rounded-xl">
-                  {/* SQL Dialect */}
-                  <div className="space-y-1.5">
-                    <span className="text-[11px] text-white/65 font-sans font-medium tracking-wide block">SQL dialect mapper</span>
-                    <div className="relative">
-                      <select 
-                        value={sqlDialect} 
-                        onChange={e => setSqlDialect(e.target.value)}
-                        className="w-full bg-[#080E18] border border-white/[0.08] rounded-lg px-3 py-2 text-xs text-white outline-none appearance-none cursor-pointer focus:border-[#4A90D9]/50"
-                      >
-                        <option value="postgres">PostgreSQL</option>
-                        <option value="mysql">MySQL Dialect</option>
-                        <option value="sqlite">SQLite Dialect</option>
-                      </select>
-                      <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-white/30 text-xs">▼</div>
-                    </div>
-                  </div>
-
-                  {/* Auto Layout */}
-                  <div className="flex items-center justify-between py-2 border-t border-white/[0.04] mt-2">
-                    <span className="text-[11px] text-white/70 font-semibold tracking-wide">Instant Auto-Layout</span>
-                    <button 
-                      onClick={() => setAutoLayout(!autoLayout)}
-                      className={`w-9 h-5 rounded-full transition-all relative border border-white/[0.06] shadow-inner ${
-                        autoLayout ? "bg-[#4A90D9] border-[#4A90D9]/20" : "bg-white/5 hover:bg-white/10"
-                      }`}
-                    >
-                      <div className={`absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all duration-300 ease-out shadow-[0_1px_3px_rgba(0,0,0,0.4)] ${
-                        autoLayout ? "left-[17px] bg-[#030712]" : "left-0.5 bg-white/60"
-                      }`} />
-                    </button>
-                  </div>
-
-                  {/* Show Grid */}
-                  <div className="flex items-center justify-between py-2 border-t border-white/[0.04]">
-                    <span className="text-[11px] text-white/70 font-semibold tracking-wide">Show Grid Patterns</span>
-                    <button 
-                      onClick={() => setShowGrid(!showGrid)}
-                      className={`w-9 h-5 rounded-full transition-all relative border border-white/[0.06] shadow-inner ${
-                        showGrid ? "bg-[#4A90D9] border-[#4A90D9]/20" : "bg-white/5 hover:bg-white/10"
-                      }`}
-                    >
-                      <div className={`absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all duration-300 ease-out shadow-[0_1px_3px_rgba(0,0,0,0.4)] ${
-                        showGrid ? "left-[17px] bg-[#030712]" : "left-0.5 bg-white/60"
-                      }`} />
-                    </button>
-                  </div>
-
-                  {/* Node Opacity */}
-                  <div className="space-y-1.5 border-t border-white/[0.04] pt-2.5">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] text-white/70 font-semibold tracking-wide">Node Opacity Slider</span>
-                      <span className="text-[10px] text-[#C9C8C7] font-mono font-bold bg-[#4A90D9]/10 border border-[#4A90D9]/20 px-1.5 py-0.5 rounded">
-                        {nodeOpacity}%
-                      </span>
-                    </div>
-                    <input 
-                      type="range" 
-                      min="30" 
-                      max="100" 
-                      value={nodeOpacity} 
-                      onChange={e => setNodeOpacity(parseInt(e.target.value))}
-                      className="w-full accent-[#4A90D9] h-1 bg-white/10 rounded-lg cursor-pointer appearance-none outline-none" 
-                    />
-                  </div>
-
-                  {/* Typography Font Face */}
-                  <div className="space-y-1.5 border-t border-white/[0.04] pt-2.5">
-                    <span className="text-[11px] text-white/65 font-sans font-medium tracking-wide block">Canvas Typography</span>
-                    <div className="relative">
-                      <select 
-                        value={selectedFont} 
-                        onChange={e => setSelectedFont(e.target.value)}
-                        className="w-full bg-[#080E18] border border-white/[0.08] rounded-lg px-3 py-2 text-xs text-white outline-none appearance-none cursor-pointer focus:border-[#4A90D9]/50"
-                      >
-                        {FONT_OPTIONS.map(f => (
-                          <option key={f} value={f}>{f}</option>
-                        ))}
-                      </select>
-                      <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-white/30 text-xs">▼</div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="text-[11px] text-white/35 leading-relaxed bg-[#050913]/10 border border-white/[0.02] p-3 rounded-xl flex gap-2">
-                  <Info size={13} className="shrink-0 text-[#4A90D9]" />
-                  <span>Double-click any schema entity node or single click any relationship line to inspect and configure attributes.</span>
-                </div>
-              </div>
+            {selectedNode && isTableNode(selectedNode) && <TableInspector node={selectedNode} ops={ops} onOpenTableEditor={onOpenTableEditor} />}
+            {selectedNode && selectedNode.type === "stickyNote" && <NoteInspector node={selectedNode} ops={ops} onDeselect={deselect} />}
+            {!selectedNode && selectedGroup && <GroupInspector name={selectedGroup} ops={ops} onSelect={(id) => setSelectedNodeId(id)} onDeselect={deselect} />}
+            {!selectedNode && !selectedGroup && selectedEdge && (isDepEdge(selectedEdge) ? <DepInspector edge={selectedEdge} ops={ops} onDeselect={deselect} /> : <RefInspector edge={selectedEdge} ops={ops} onDeselect={deselect} />)}
+            {!(selectedNode && (isTableNode(selectedNode) || selectedNode.type === "stickyNote")) && !selectedGroup && !selectedEdge && (
+              <SettingsPanel ops={ops} showGrid={showGrid} setShowGrid={setShowGrid} sqlDialect={sqlDialect} setSqlDialect={setSqlDialect} onAutoLayout={onAutoLayout} />
             )}
           </div>
         )}
-        {/* ==================== VIEWS TAB ==================== */}
-        {activeTab === "views" && (
-          <DiagramViewsPanel
-            nodes={nodes}
-            setNodes={setNodes}
-            edges={edges}
-            setEdges={setEdges}
-            takeSnapshot={takeSnapshot}
-            onFocusNode={onFocusNode}
-          />
-        )}
-        
+
+        {activeTab === "views" && <ViewsPanel ops={ops} />}
       </div>
-    </div>
+    </aside>
   );
 }

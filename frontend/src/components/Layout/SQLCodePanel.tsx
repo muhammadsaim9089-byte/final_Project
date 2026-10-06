@@ -1,29 +1,21 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { useLayout } from "./LayoutContext";
-import { parseSqlDdl, ParsedSchema } from "@/lib/sqlParser";
-import { parsePrisma, parseDjango, parseRails } from "@/lib/frameworkParsers";
+import { AI_DOCK_WIDTH, useLayout } from "./LayoutContext";
+import { DbmlWorkspace } from "./DbmlWorkspace";
+import { importText } from "@/lib/import";
+import { SQL_DIALECTS } from "@/lib/sql/dialects";
+import { showToast } from "@/components/ui/toast";
 import {
   FileCode2,
-  Download,
-  Copy,
-  Check,
-  Upload,
   AlertTriangle,
   CheckCircle,
-  Braces,
-  FileUp,
-  X,
   ChevronRight,
   ChevronLeft,
   Database,
   Table2,
   Keyboard,
-  Link2,
-  ChevronDown,
-  Server,
-  ClipboardCopy,
+  Code2,
 } from "lucide-react";
 
 // ─── SQL KEYWORD LIST ────────────────────────────────────────────────────────
@@ -41,51 +33,6 @@ const SQL_KEYWORDS = [
 
 // ─── SQL AUTOCOMPLETE ────────────────────────────────────────────────────────
 const SQL_AUTOCOMPLETE_ITEMS = SQL_KEYWORDS.map(k => k.toUpperCase());
-
-// ─── SIMPLE SQL FORMATTER ────────────────────────────────────────────────────
-function formatSql(sql: string): string {
-  if (!sql.trim()) return sql;
-  // Normalize whitespace
-  let formatted = sql.replace(/\s+/g, ' ').trim();
-  // Add newlines before major clauses
-  const breakBefore = [
-    'SELECT','FROM','WHERE','JOIN','LEFT JOIN','RIGHT JOIN','INNER JOIN',
-    'OUTER JOIN','GROUP BY','ORDER BY','HAVING','LIMIT','OFFSET','INSERT INTO',
-    'VALUES','UPDATE','SET','DELETE','CREATE TABLE','ALTER TABLE','DROP TABLE',
-    'PRIMARY KEY','FOREIGN KEY','REFERENCES','CONSTRAINT','ON DELETE','ON UPDATE',
-    'NOT NULL','DEFAULT','UNIQUE','CHECK','IF EXISTS','IF NOT EXISTS',
-  ];
-  for (const clause of breakBefore) {
-    const regex = new RegExp(`\\b(${clause.replace(/ /g, '\\s+')})\\b`, 'gi');
-    formatted = formatted.replace(regex, '\n$1');
-  }
-  // Indent sub-clauses
-  const lines = formatted.split('\n').map(l => l.trim()).filter(Boolean);
-  const result: string[] = [];
-  let indent = 0;
-  for (const line of lines) {
-    const upper = line.toUpperCase();
-    if (upper.startsWith('CREATE TABLE') || upper.startsWith('INSERT INTO')) {
-      indent = 0;
-      result.push(line);
-      indent = 1;
-    } else if (upper.startsWith(')')) {
-      indent = Math.max(0, indent - 1);
-      result.push('  '.repeat(indent) + line);
-    } else if (upper.startsWith('SELECT') || upper.startsWith('FROM') || upper.startsWith('WHERE') || upper.startsWith('GROUP BY') || upper.startsWith('ORDER BY') || upper.startsWith('HAVING') || upper.startsWith('LIMIT')) {
-      indent = 0;
-      result.push(line);
-      indent = 1;
-    } else {
-      result.push('  '.repeat(indent) + line);
-    }
-  }
-  // Add semicolons where missing
-  let finalSql = result.join('\n');
-  // Separate multiple statements
-  finalSql = finalSql.replace(/;\s*/g, ';\n\n');
-  return finalSql.trim();
-}
 
 // ─── TABLE COUNT PARSER ──────────────────────────────────────────────────────
 function countTables(sql: string): number {
@@ -118,23 +65,32 @@ function findErrorLines(sql: string): number[] {
   return errorLines;
 }
 
-// ─── BREADCRUMB PARSER ───────────────────────────────────────────────────────
-function getBreadcrumb(sql: string, cursorLine: number): string[] {
-  const lines = sql.split('\n');
-  const crumbs: string[] = ['Schema'];
-  let currentTable = '';
-  for (let i = 0; i <= cursorLine && i < lines.length; i++) {
-    const match = lines[i].match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["']?(\w+)["']?/i);
-    if (match) currentTable = match[1];
-    if (lines[i].includes(')') && currentTable) {
-      // Check if we're past the closing paren
-      if (i < cursorLine) currentTable = '';
-    }
-  }
-  if (currentTable) {
-    crumbs.push('tables', currentTable);
-  }
-  return crumbs;
+type CodeMode = "collapsed" | "split" | "fullscreen";
+
+/**
+ * The tab that rides the editor's right edge (like dbdiagram.io's). One click moves the editor one step:
+ * closed → open → full screen → closed (only this tab stays). The tooltip names the next step.
+ */
+function EditorEdgeHandle({ mode, onClick, className = "", style }: { mode: CodeMode; onClick: () => void; className?: string; style?: React.CSSProperties }) {
+  const label = mode === "collapsed" ? "Open editor" : mode === "split" ? "Expand editor" : "Close editor";
+  const shortcut = mode === "split" ? "" : "Ctrl + \\";
+  const onRightEdge = mode === "fullscreen";
+  return (
+    <button
+      onClick={onClick}
+      aria-label={label}
+      style={style}
+      className={`group z-50 w-7 h-14 bg-[#0d1117] border border-white/[0.14] flex items-center justify-center cursor-pointer text-white/80 hover:text-white hover:bg-[#161c26] shadow-[0_4px_16px_rgba(0,0,0,0.6)] transition-colors ${onRightEdge ? "rounded-l-lg border-r-0" : "rounded-r-lg border-l-0"} ${className}`}
+    >
+      {onRightEdge ? <ChevronLeft size={16} className="text-[#4A90D9]" /> : <ChevronRight size={16} className="text-[#4A90D9]" />}
+      <span
+        className={`pointer-events-none absolute top-1/2 -translate-y-1/2 ${onRightEdge ? "right-full mr-2" : "left-full ml-2"} whitespace-nowrap rounded-lg bg-black px-3.5 py-2 text-center text-[13px] font-medium leading-tight text-white shadow-xl opacity-0 transition-opacity duration-150 group-hover:opacity-100`}
+      >
+        {label}
+        {shortcut && <span className="block text-[12px] text-white/80">{shortcut}</span>}
+      </span>
+    </button>
+  );
 }
 
 interface SqlEditorProps {
@@ -142,7 +98,6 @@ interface SqlEditorProps {
   onChange: (val: string) => void;
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
   placeholder?: string;
-  isImport?: boolean;
   isValidSql: boolean;
   errorLines: Set<number>;
   cursorLine: number;
@@ -151,11 +106,9 @@ interface SqlEditorProps {
   autocompleteItems: string[];
   autocompleteIdx: number;
   handleCursorChange: (e: React.SyntheticEvent<HTMLTextAreaElement>) => void;
-  handleEditorKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>, isImport?: boolean) => void;
+  handleEditorKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   highlightSql: (code: string, errorLineSet?: Set<number>) => string;
-  importTextareaRef: React.RefObject<HTMLTextAreaElement | null>;
   editorTextareaRef: React.RefObject<HTMLTextAreaElement | null>;
-  setImportText: (val: string) => void;
   setGeneratedSql: (val: string) => void;
   setShowAutocomplete: (show: boolean) => void;
 }
@@ -165,7 +118,6 @@ function SqlEditor({
   onChange,
   textareaRef,
   placeholder,
-  isImport = false,
   isValidSql,
   errorLines,
   cursorLine,
@@ -176,9 +128,7 @@ function SqlEditor({
   handleCursorChange,
   handleEditorKeyDown,
   highlightSql,
-  importTextareaRef,
   editorTextareaRef,
-  setImportText,
   setGeneratedSql,
   setShowAutocomplete,
 }: SqlEditorProps) {
@@ -214,14 +164,14 @@ function SqlEditor({
   return (
     <div className={`relative flex-1 rounded-xl overflow-hidden border ${
       isValidSql && errorLines.size === 0 ? 'border-white/[0.06]' : 'border-red-500/40'
-    } bg-[#040810] flex h-full min-h-0`}>
+    } bg-[#1e1e1e] flex h-full min-h-0`}>
       
       {/* Line numbers gutter (fixed left column, does not scroll horizontally) */}
       <div 
         ref={gutterRef}
-        className="sql-ide-gutter w-12 h-full overflow-hidden select-none bg-[#030710] border-r border-white/[0.04] pt-3 shrink-0"
+        className="sql-ide-gutter w-12 h-full overflow-hidden select-none bg-[#1e1e1e] pt-3 shrink-0"
       >
-        <div className="text-right text-[11px] text-white/30 font-mono pr-2 pb-12">
+        <div className="text-right text-[12px] text-[#b4b4b4] font-mono pr-3 pb-12">
           {lines.map((_, i) => (
             <div 
               key={i} 
@@ -236,7 +186,7 @@ function SqlEditor({
       </div>
 
       {/* Code area viewport */}
-      <div className="flex-1 h-full relative overflow-hidden bg-[#040810]">
+      <div className="flex-1 h-full relative overflow-hidden bg-[#1e1e1e]">
         
         {/* Preformatted highlighted code (underneath) */}
         <div 
@@ -262,8 +212,8 @@ function SqlEditor({
             handleCursorChange(e);
           }}
           onKeyUp={handleCursorChange}
-          onKeyDown={(e) => handleEditorKeyDown(e, isImport)}
-          className="absolute inset-0 p-3 bg-transparent text-transparent caret-[#4A90D9] resize-none outline-none text-[13px] font-mono leading-6 m-0 border-0 overflow-auto whitespace-pre w-full h-full z-10 p-scrollbar pb-12 pr-12"
+          onKeyDown={handleEditorKeyDown}
+          className="absolute inset-0 p-3 bg-transparent text-transparent caret-[#4A90D9] resize-none outline-none text-[13px] font-mono leading-6 m-0 border-0 overflow-auto whitespace-pre w-full h-full z-10 code-scroll pb-12 pr-12"
           spellCheck="false"
           placeholder={placeholder}
           style={{
@@ -289,7 +239,7 @@ function SqlEditor({
                 }`}
                 onMouseDown={(e) => { e.preventDefault(); }}
                 onClick={() => {
-                  const textarea = (isImport ? importTextareaRef : editorTextareaRef).current;
+                  const textarea = editorTextareaRef.current;
                   if (textarea) {
                     const text = textarea.value;
                     const pos = textarea.selectionStart;
@@ -297,9 +247,7 @@ function SqlEditor({
                     const wordMatch = before.match(/(\w+)$/);
                     if (wordMatch) {
                       const start = pos - wordMatch[1].length;
-                      const newText = text.substring(0, start) + item + ' ' + text.substring(pos);
-                      if (isImport) setImportText(newText);
-                      else setGeneratedSql(newText);
+                      setGeneratedSql(text.substring(0, start) + item + ' ' + text.substring(pos));
                     }
                   }
                   setShowAutocomplete(false);
@@ -321,16 +269,13 @@ function SqlEditor({
 // ═══════════════════════════════════════════════════════════════════════════════
 export function SQLCodePanel() {
   const layout = useLayout();
-  const [importText, setImportText] = useState("");
-  const [importDialect, setImportDialect] = useState<"sql" | "prisma" | "django" | "rails">("sql");
   const activeTab = layout.sqlActiveTab;
   const setActiveTab = layout.setSqlActiveTab;
+  const canvasDialect = layout.getCanvasApi()?.getSqlDialect() || "postgres";
 
   const [compileError, setCompileError] = useState<string | null>(null);
   const [isValidSql, setIsValidSql] = useState(true);
-  const [copiedSql, setCopiedSql] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
-  const [isDragOver, setIsDragOver] = useState(false);
   const [cursorLine, setCursorLine] = useState(0);
   const [cursorCol, setCursorCol] = useState(0);
 
@@ -343,46 +288,12 @@ export function SQLCodePanel() {
   const dragStartX = useRef(0);
   const dragStartWidth = useRef(35);
   const editorTextareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const importTextareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-
-  // ── Reverse Engineering Wizard State ──
-  const [showReverseWizard, setShowReverseWizard] = useState(false);
-  const [connString, setConnString] = useState("");
-  const [parsedConn, setParsedConn] = useState<{
-    protocol: string; host: string; port: string; user: string; password: string; database: string;
-  } | null>(null);
-  const [wizardStep, setWizardStep] = useState<1 | 2 | 3>(1);
-  const [copiedQuery, setCopiedQuery] = useState(false);
-
-  // Parse connection string (postgres:// or mysql://)
-  const parseConnectionString = (str: string) => {
-    try {
-      const match = str.trim().match(/^(postgres(?:ql)?|mysql):\/\/([^:]+):([^@]+)@([^:/]+)(?::([0-9]+))?\/(.+?)(?:\?.*)?$/);
-      if (!match) return null;
-      return {
-        protocol: match[1].startsWith('postgres') ? 'PostgreSQL' : 'MySQL',
-        user: decodeURIComponent(match[2]),
-        password: match[3],
-        host: match[4],
-        port: match[5] || (match[1].startsWith('postgres') ? '5432' : '3306'),
-        database: decodeURIComponent(match[6]),
-      };
-    } catch { return null; }
-  };
-
-  const getExtractionQuery = (parsed: NonNullable<typeof parsedConn>) => {
-    if (parsed.protocol === 'PostgreSQL') {
-      return `-- Run this on your PostgreSQL database:\nSELECT\n  'CREATE TABLE ' || table_name || ' (' ||\n  string_agg(\n    column_name || ' ' || data_type ||\n    CASE WHEN character_maximum_length IS NOT NULL THEN '(' || character_maximum_length || ')' ELSE '' END ||\n    CASE WHEN is_nullable = 'NO' THEN ' NOT NULL' ELSE '' END ||\n    CASE WHEN column_default IS NOT NULL THEN ' DEFAULT ' || column_default ELSE '' END,\n    ', '\n  ) || ');'\nFROM information_schema.columns\nWHERE table_schema = 'public'\nGROUP BY table_name\nORDER BY table_name;`;
-    }
-    return `-- Run this on your MySQL database:\nSELECT\n  CONCAT('CREATE TABLE ', TABLE_NAME, ' (',\n  GROUP_CONCAT(\n    CONCAT(COLUMN_NAME, ' ', COLUMN_TYPE,\n    IF(IS_NULLABLE = 'NO', ' NOT NULL', ''),\n    IF(COLUMN_DEFAULT IS NOT NULL, CONCAT(' DEFAULT ', QUOTE(COLUMN_DEFAULT)), ''))\n    SEPARATOR ', '\n  ), ');')\nFROM INFORMATION_SCHEMA.COLUMNS\nWHERE TABLE_SCHEMA = '${parsed.database}'\nGROUP BY TABLE_NAME\nORDER BY TABLE_NAME;`;
-  };
 
   // Load persisted tab on mount
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('designdb_sql_tab') as "editor" | "import";
-      if (saved) {
+      const saved = localStorage.getItem('designdb_sql_tab');
+      if (saved === 'dbml' || saved === 'editor') {
         layout.setSqlActiveTab(saved);
       }
     }
@@ -396,27 +307,17 @@ export function SQLCodePanel() {
     }
   }, [activeTab]);
 
-  // ─── KEYBOARD SHORTCUTS ──────────────────────────────────────────────────
+  // An AI proposal's diff only renders on the DBML tab (see DbmlWorkspace) — surface it regardless of which
+  // tab or panel state you had open, the same way accepting it will change the DBML, not the read-only SQL view.
+  const hadAiProposal = useRef(false);
   useEffect(() => {
-    if (!layout.isSqlOpen) return;
-    const handler = (e: KeyboardEvent) => {
-      // Ctrl+S = Copy SQL
-      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-        e.preventDefault();
-        navigator.clipboard.writeText(layout.generatedSql);
-        setCopiedSql(true);
-        setTimeout(() => setCopiedSql(false), 2000);
-      }
-      // Ctrl+I = Switch to Import tab
-      if ((e.ctrlKey || e.metaKey) && e.key === 'i') {
-        e.preventDefault();
-        setActiveTab('import');
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    if (layout.aiProposal && !hadAiProposal.current) {
+      setActiveTab('dbml');
+      if (layout.codeWindowMode === 'collapsed') layout.setCodeWindowMode('split');
+    }
+    hadAiProposal.current = !!layout.aiProposal;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layout.isSqlOpen, layout.generatedSql]);
+  }, [layout.aiProposal]);
 
   // ─── RESIZE DRAG LOGIC ───────────────────────────────────────────────────
   const handleResizeStart = useCallback((e: React.MouseEvent) => {
@@ -447,151 +348,40 @@ export function SQLCodePanel() {
     };
   }, [isDragging]);
 
-  // ─── FILE UPLOAD HANDLER ─────────────────────────────────────────────────
-  const handleFileUpload = (file: File) => {
-    const ext = file.name.split('.').pop()?.toLowerCase() || '';
-    const validExts = ['sql', 'txt', 'ddl', 'prisma', 'py', 'rb'];
-    if (!validExts.includes(ext)) {
-      setCompileError('Please upload a .sql, .txt, .ddl, .prisma, .py, or .rb file.');
-      return;
-    }
-    // Auto-detect dialect from file extension
-    if (ext === 'prisma') setImportDialect('prisma');
-    else if (ext === 'py') setImportDialect('django');
-    else if (ext === 'rb') setImportDialect('rails');
-    else setImportDialect('sql');
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const text = e.target?.result as string;
-      setImportText(text);
-      setActiveTab('import');
-      setCompileError(null);
-    };
-    reader.readAsText(file);
-  };
-
-  // ─── DRAG AND DROP ───────────────────────────────────────────────────────
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragOver(true);
-  };
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragOver(false);
-  };
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragOver(false);
-    const files = e.dataTransfer.files;
-    if (files.length > 0) {
-      handleFileUpload(files[0]);
-    }
-  };
-
   // ─── VALIDATION ──────────────────────────────────────────────────────────
   const runValidation = () => {
     setCompileError(null);
     setIsValidSql(true);
-    try {
-      const parsed = parseSqlDdl(layout.generatedSql || importText || "");
-      if (parsed.entities.length === 0) {
-        throw new Error('No CREATE TABLE statements detected.');
-      }
-      layout.applyParsedSchema(parsed as ParsedSchema);
-    } catch (err: any) {
-      setCompileError(err.message || 'SQL parse error');
+    const r = importText(layout.generatedSql || "", 'sql');
+    if (r.errors.length) {
+      setCompileError(r.errors[0]);
       setIsValidSql(false);
+      return;
     }
+    showToast(`Valid SQL — ${r.model.tables.length} tables, ${r.model.refs.length} relationships${r.warnings.length ? `, ${r.warnings.length} warning(s)` : ''}`, 'validate');
   };
 
+  /** SQL editor → diagram */
   const handleApplyChanges = () => {
     setCompileError(null);
-    try {
-      const parsed = parseSqlDdl(layout.generatedSql || "");
-      if (parsed.entities.length === 0) {
-        setCompileError('No CREATE TABLE statements found.');
-        setIsValidSql(false);
-        return;
-      }
-      layout.applyParsedSchema(parsed);
-      setIsValidSql(true);
-    } catch (err: any) {
-      setCompileError(err.message || 'Failed to compile SQL');
+    const api = layout.getCanvasApi();
+    const r = importText(layout.generatedSql || "", 'sql');
+    if (r.errors.length) {
+      setCompileError(r.errors[0]);
       setIsValidSql(false);
+      return;
     }
-  };
-
-  const handleGenerateFromImport = () => {
-    setCompileError(null);
-    try {
-      let parsed: ParsedSchema;
-      switch (importDialect) {
-        case 'prisma':
-          parsed = parsePrisma(importText || "");
-          break;
-        case 'django':
-          parsed = parseDjango(importText || "");
-          break;
-        case 'rails':
-          parsed = parseRails(importText || "");
-          break;
-        default:
-          parsed = parseSqlDdl(importText || "");
-          break;
-      }
-      if (parsed.entities.length === 0) {
-        const dialectLabels: Record<string, string> = {
-          sql: 'CREATE TABLE statements',
-          prisma: 'Prisma model definitions',
-          django: 'Django Model classes',
-          rails: 'create_table blocks',
-        };
-        setCompileError(`No ${dialectLabels[importDialect] || 'schema definitions'} found in import.`);
-        setIsValidSql(false);
-        return;
-      }
-      layout.applyParsedSchema(parsed);
-      setImportText("");
-      setActiveTab('editor');
-      setIsValidSql(true);
-    } catch (err: any) {
-      setCompileError(err.message || 'Import failed to parse');
-      setIsValidSql(false);
+    if (!api) {
+      setCompileError('Canvas is not ready yet.');
+      return;
     }
-  };
-
-  // ─── COPY / DOWNLOAD ────────────────────────────────────────────────────
-  const handleCopySql = () => {
-    navigator.clipboard.writeText(layout.generatedSql);
-    setCopiedSql(true);
-    setTimeout(() => setCopiedSql(false), 2000);
-  };
-
-  const handleDownloadSql = () => {
-    const blob = new Blob([layout.generatedSql], { type: 'text/sql' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'schema.sql';
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  // ─── FORMAT SQL ──────────────────────────────────────────────────────────
-  const handleFormatSql = () => {
-    if (activeTab === 'editor') {
-      layout.setGeneratedSql(formatSql(layout.generatedSql));
-    } else {
-      setImportText(formatSql(importText));
-    }
+    api.applyModel(r.model, { mode: 'replace', layout: 'keep', restorePoint: 'Before applying SQL' });
+    setIsValidSql(true);
+    showToast(`Applied ${r.model.tables.length} tables from SQL`, 'success');
   };
 
   // ─── AUTOCOMPLETE ────────────────────────────────────────────────────────
-  const handleEditorKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>, isImport = false) => {
+  const handleEditorKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Ctrl+Space = autocomplete
     if ((e.ctrlKey || e.metaKey) && e.key === ' ') {
       e.preventDefault();
@@ -626,7 +416,7 @@ export function SQLCodePanel() {
       if (e.key === 'Enter' || e.key === 'Tab') {
         e.preventDefault();
         const item = autocompleteItems[autocompleteIdx];
-        const textarea = (isImport ? importTextareaRef : editorTextareaRef).current;
+        const textarea = editorTextareaRef.current;
         if (textarea && item) {
           const text = textarea.value;
           const pos = textarea.selectionStart;
@@ -634,9 +424,7 @@ export function SQLCodePanel() {
           const wordMatch = before.match(/(\w+)$/);
           if (wordMatch) {
             const start = pos - wordMatch[1].length;
-            const newText = text.substring(0, start) + item + ' ' + text.substring(pos);
-            if (isImport) setImportText(newText);
-            else layout.setGeneratedSql(newText);
+            layout.setGeneratedSql(text.substring(0, start) + item + ' ' + text.substring(pos));
           }
         }
         setShowAutocomplete(false);
@@ -671,11 +459,11 @@ export function SQLCodePanel() {
       let esc = escapeHtml(line);
       // Keywords
       const kwRegex = new RegExp('\\b(' + SQL_KEYWORDS.join('|') + ')\\b', 'gi');
-      esc = esc.replace(kwRegex, (m) => `<span class="text-[#b38fff] font-semibold">${m}</span>`);
+      esc = esc.replace(kwRegex, (m) => `<span class="text-[#569cd6]">${m}</span>`);
       // Strings
-      esc = esc.replace(/'[^']*'/g, (m) => `<span class="text-[#9be7a6]">${m}</span>`);
+      esc = esc.replace(/'[^']*'/g, (m) => `<span class="text-[#ce9178]">${m}</span>`);
       // Numbers
-      esc = esc.replace(/\b(\d+)\b/g, (m) => `<span class="text-[#f6c85f]">${m}</span>`);
+      esc = esc.replace(/\b(\d+)\b/g, (m) => `<span class="text-[#e6e6e6]">${m}</span>`);
       // Comments
       esc = esc.replace(/(--.*)/g, (m) => `<span class="text-white/30 italic">${m}</span>`);
       // Error line underline
@@ -687,64 +475,48 @@ export function SQLCodePanel() {
   };
 
   // ─── COMPUTED VALUES ──────────────────────────────────────────────────────
-  const currentText = activeTab === 'editor' ? layout.generatedSql : importText;
+  const currentText = activeTab === 'editor' ? layout.generatedSql : layout.dbmlText;
   const tableCount = countTables(currentText);
   const lineCount = currentText.split('\n').length;
-  const errorLines = useMemo(() => new Set(findErrorLines(currentText)), [currentText]);
-  const breadcrumb = useMemo(() => getBreadcrumb(currentText, cursorLine), [currentText, cursorLine]);
+  // The SQL heuristics only make sense for SQL text — DBML has its own diagnostics (see DbmlWorkspace)
+  const errorLines = useMemo(() => (activeTab === 'dbml' ? new Set<number>() : new Set(findErrorLines(currentText))), [currentText, activeTab]);
 
   // Panel positioning
   const mode = layout.codeWindowMode;
   const isVisible = mode !== "collapsed";
 
-  // When collapsed, only render the edge tab
-  if (mode === "collapsed") {
-    return (
-      <button
-        onClick={() => layout.setCodeWindowMode("split")}
-        className="fixed top-16 left-0 z-50 w-6 h-11 bg-[#090d16] border border-l-0 border-white/[0.12] rounded-r-lg flex items-center justify-center cursor-pointer shadow-[4px_0_16px_rgba(0,0,0,0.6)] hover:bg-[#121926] text-white/80 hover:text-white transition-all group"
-        title="Open SQL Code Editor (>)"
-      >
-        <ChevronRight size={14} className="group-hover:translate-x-0.5 transition-transform text-[#4A90D9]" />
-      </button>
-    );
-  }
+  // The AI chat docks to the left of the editor; anything positioned against the viewport must start after it
+  const aiOffset = layout.aiOpen ? AI_DOCK_WIDTH : "0px";
+
+  // closed → open → full screen → closed
+  const cycleEditor = () => layout.setCodeWindowMode(mode === "collapsed" ? "split" : mode === "split" ? "fullscreen" : "collapsed");
+
+  // Collapsed shows only the edge tab — but the editor stays mounted (hidden, below), so its text, cursor, selection,
+  // scroll position and undo history survive being folded away (by the user or by the SQL playground).
+  const collapsed = mode === "collapsed";
+  const everCollapsed = useRef(false);
+  if (collapsed) everCollapsed.current = true;
 
 
   // Shared panel body content (used in both fullscreen and split modes)
   const panelBody = (
     <>
-      {/* ─── HEADER ─────────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between px-4 pt-3 pb-2 shrink-0">
-        <div className="flex items-center gap-2">
-          <div className="p-1.5 rounded-lg bg-gradient-to-br from-[#4A90D9]/20 to-[#b38fff]/10 border border-[#4A90D9]/20">
-            <FileCode2 size={14} className="text-[#4A90D9]" />
-          </div>
-          <div>
-            <h4 className="text-[13px] font-bold text-white tracking-wide">SQL Workspace</h4>
-            <span className="text-[9px] text-white/35 font-mono uppercase tracking-wider">Interactive DDL Editor</span>
-          </div>
-        </div>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => layout.toggleCodeWindowFullscreen()}
-            className="p-1 text-white/40 hover:text-white hover:bg-white/[0.06] rounded-md text-[10px] font-mono font-bold transition-all px-2 border border-white/[0.06]"
-            title={mode === "fullscreen" ? "Exit Fullscreen" : "Fullscreen"}
-          >
-            {mode === "fullscreen" ? "Half" : "Full"}
-          </button>
-          <button
-            onClick={() => layout.setCodeWindowMode("collapsed")}
-            className="p-1.5 text-white/40 hover:text-white hover:bg-white/[0.06] rounded-lg transition-all"
-            title="Close panel"
-          >
-            <X size={14} />
-          </button>
-        </div>
-      </div>
-
       {/* ─── TAB BAR ────────────────────────────────────────────────────── */}
-      <div className="flex items-center gap-1 px-4 pb-2 shrink-0">
+      <div className="flex items-center gap-1 px-4 pt-3 pb-2 shrink-0">
+        <button
+          onClick={() => setActiveTab('dbml')}
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold rounded-lg transition-all relative ${
+            activeTab === 'dbml'
+              ? 'bg-white/[0.06] text-white border border-white/[0.08]'
+              : 'text-white/45 hover:text-white/70 hover:bg-white/[0.03] border border-transparent'
+          }`}
+        >
+          <Code2 size={11} />
+          DBML
+          {activeTab === 'dbml' && (
+            <div className="absolute bottom-0 left-2 right-2 h-[2px] rounded-full bg-gradient-to-r from-[#4A90D9] to-[#b38fff]" />
+          )}
+        </button>
         <button
           onClick={() => setActiveTab('editor')}
           className={`flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold rounded-lg transition-all relative ${
@@ -754,22 +526,8 @@ export function SQLCodePanel() {
           }`}
         >
           <FileCode2 size={11} />
-          Read & Modify
+          SQL
           {activeTab === 'editor' && (
-            <div className="absolute bottom-0 left-2 right-2 h-[2px] rounded-full bg-gradient-to-r from-[#4A90D9] to-[#b38fff]" />
-          )}
-        </button>
-        <button
-          onClick={() => setActiveTab('import')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold rounded-lg transition-all relative ${
-            activeTab === 'import'
-              ? 'bg-white/[0.06] text-white border border-white/[0.08]'
-              : 'text-white/45 hover:text-white/70 hover:bg-white/[0.03] border border-transparent'
-          }`}
-        >
-          <Upload size={11} />
-          Import
-          {activeTab === 'import' && (
             <div className="absolute bottom-0 left-2 right-2 h-[2px] rounded-full bg-gradient-to-r from-[#4A90D9] to-[#b38fff]" />
           )}
         </button>
@@ -778,25 +536,18 @@ export function SQLCodePanel() {
         <div className="ml-auto flex items-center gap-1.5">
           <span className="text-[9px] text-white/20 font-mono flex items-center gap-1">
             <Keyboard size={9} />
-            Ctrl+S copy · Ctrl+I import
+            {activeTab === 'dbml' ? 'Ctrl+/ comment · Ctrl+click go to table' : 'Ctrl+\ hide panel'}
           </span>
         </div>
-      </div>
-
-      {/* ─── BREADCRUMB ─────────────────────────────────────────────────── */}
-      <div className="flex items-center gap-1 px-4 pb-2 text-[10px] text-white/30 font-mono shrink-0">
-        {breadcrumb.map((crumb, i) => (
-          <React.Fragment key={i}>
-            {i > 0 && <ChevronRight size={8} className="text-white/15" />}
-            <span className={i === breadcrumb.length - 1 ? 'text-[#4A90D9]/80' : ''}>{crumb}</span>
-          </React.Fragment>
-        ))}
       </div>
 
       {/* ─── EDITOR AREA ────────────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col px-4 gap-2 min-h-0 overflow-hidden">
 
-        {/* ── READ & MODIFY TAB ────────────────────────────────────────── */}
+        {/* ── DBML TAB ─────────────────────────────────────────────────── */}
+        {activeTab === 'dbml' && <DbmlWorkspace />}
+
+        {/* ── SQL TAB (read & modify) ──────────────────────────────────── */}
         {activeTab === 'editor' && (
           <div className="flex-1 flex flex-col gap-2 min-h-0">
             <SqlEditor
@@ -804,7 +555,6 @@ export function SQLCodePanel() {
               onChange={layout.setGeneratedSql}
               textareaRef={editorTextareaRef}
               placeholder="-- Generated SQL will appear here after ERD generation..."
-              isImport={false}
               isValidSql={isValidSql}
               errorLines={errorLines}
               cursorLine={cursorLine}
@@ -815,45 +565,13 @@ export function SQLCodePanel() {
               handleCursorChange={handleCursorChange}
               handleEditorKeyDown={handleEditorKeyDown}
               highlightSql={highlightSql}
-              importTextareaRef={importTextareaRef}
               editorTextareaRef={editorTextareaRef}
-              setImportText={setImportText}
               setGeneratedSql={layout.setGeneratedSql}
               setShowAutocomplete={setShowAutocomplete}
             />
 
             {/* Action buttons */}
-            <div className="flex items-center justify-between gap-2 shrink-0">
-              <div className="flex items-center gap-2">
-                {/* Copy */}
-                <button
-                  onClick={handleCopySql}
-                  disabled={!layout.generatedSql}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium rounded-lg bg-white/[0.03] border border-white/[0.06] text-white/60 hover:text-white hover:bg-white/[0.06] transition-all disabled:opacity-30"
-                >
-                  {copiedSql ? <Check size={11} className="text-[#9be7a6]" /> : <Copy size={11} />}
-                  {copiedSql ? 'Copied!' : 'Copy'}
-                </button>
-                {/* Download */}
-                <button
-                  onClick={handleDownloadSql}
-                  disabled={!layout.generatedSql}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium rounded-lg bg-white/[0.03] border border-white/[0.06] text-white/60 hover:text-white hover:bg-white/[0.06] transition-all disabled:opacity-30"
-                >
-                  <Download size={11} />
-                  .sql
-                </button>
-                {/* Format */}
-                <button
-                  onClick={handleFormatSql}
-                  disabled={!layout.generatedSql}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium rounded-lg bg-white/[0.03] border border-white/[0.06] text-white/60 hover:text-white hover:bg-white/[0.06] transition-all disabled:opacity-30"
-                >
-                  <Braces size={11} />
-                  Format
-                </button>
-              </div>
-
+            <div className="flex items-center justify-end gap-2 shrink-0">
               <div className="flex items-center gap-2">
                 <button onClick={runValidation} className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold rounded-lg bg-white/[0.03] border border-white/[0.06] text-white/60 hover:text-white hover:bg-white/[0.06] transition-all">
                   <CheckCircle size={11} />
@@ -870,182 +588,6 @@ export function SQLCodePanel() {
           </div>
         )}
 
-        {/* ── IMPORT TAB ───────────────────────────────────────────────── */}
-        {activeTab === 'import' && (
-          <div className="flex-1 flex flex-col gap-2 min-h-0">
-            {/* Dialect selector + file upload header */}
-            <div className="flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-2">
-                <select
-                  value={importDialect}
-                  onChange={(e) => setImportDialect(e.target.value as any)}
-                  className="bg-[#0A0E1A] border border-white/[0.08] rounded-lg px-2 py-1.5 text-[11px] text-white/80 font-mono outline-none focus:border-[#4A90D9]/40 appearance-none cursor-pointer pr-6 transition-colors"
-                  style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='rgba(255,255,255,0.3)' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 6px center' }}
-                >
-                  <option value="sql" style={{ background: '#0A0E1A', color: '#ccc' }}>SQL DDL</option>
-                  <option value="prisma" style={{ background: '#0A0E1A', color: '#ccc' }}>Prisma (.prisma)</option>
-                  <option value="django" style={{ background: '#0A0E1A', color: '#ccc' }}>Django Models (.py)</option>
-                  <option value="rails" style={{ background: '#0A0E1A', color: '#ccc' }}>Rails Schema (.rb)</option>
-                </select>
-                <span className="text-[9px] text-white/25 font-mono uppercase tracking-wider">
-                  {importDialect === 'sql' ? 'SQL DDL Import' : importDialect === 'prisma' ? 'Prisma Schema Import' : importDialect === 'django' ? 'Django Models Import' : 'Rails Schema Import'}
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".sql,.txt,.ddl,.prisma,.py,.rb"
-                  className="hidden"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (file) handleFileUpload(file);
-                  }}
-                />
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium rounded-lg bg-white/[0.03] border border-white/[0.06] text-white/50 hover:text-white hover:bg-white/[0.06] hover:border-white/[0.12] transition-all"
-                >
-                  <FileUp size={11} />
-                  Open File
-                </button>
-              </div>
-            </div>
-
-            {/* ── Reverse Engineer from Connection String ── */}
-            <div className="shrink-0 border border-white/[0.06] rounded-xl overflow-hidden bg-white/[0.01]">
-              <button
-                onClick={() => { setShowReverseWizard(v => !v); if (!showReverseWizard) setWizardStep(1); }}
-                className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-white/[0.02] transition-colors"
-              >
-                <div className="flex items-center gap-2">
-                  <Link2 size={11} className="text-[#4A90D9]" />
-                  <span className="text-[11px] font-semibold text-white/70">Reverse Engineer from Connection String</span>
-                </div>
-                <ChevronDown size={12} className={`text-white/30 transition-transform duration-200 ${showReverseWizard ? 'rotate-180' : ''}`} />
-              </button>
-
-              {showReverseWizard && (
-                <div className="px-3 pb-3 space-y-3 border-t border-white/[0.04]">
-                  {wizardStep === 1 && (
-                    <div className="space-y-2 pt-2">
-                      <label className="text-[10px] text-white/40 font-mono uppercase tracking-wider">Connection String</label>
-                      <input
-                        value={connString}
-                        onChange={(e) => {
-                          setConnString(e.target.value);
-                          setParsedConn(parseConnectionString(e.target.value));
-                        }}
-                        placeholder="postgres://user:pass@host:5432/dbname"
-                        className="w-full bg-[#040810] border border-white/[0.08] rounded-lg px-3 py-2 text-[12px] text-white/80 font-mono outline-none focus:border-[#4A90D9]/40 placeholder:text-white/20 transition-colors"
-                      />
-                      {connString && !parsedConn && (
-                        <p className="text-[10px] text-red-400 flex items-center gap-1"><AlertTriangle size={10} /> Invalid format. Use: postgres://user:pass@host:port/db</p>
-                      )}
-                      {parsedConn && (
-                        <div className="bg-white/[0.02] rounded-lg p-2 space-y-1 text-[10px] font-mono">
-                          <div className="flex items-center gap-2"><Server size={9} className="text-[#4A90D9]" /><span className="text-white/40">Type:</span><span className="text-white/70">{parsedConn.protocol}</span></div>
-                          <div className="flex items-center gap-2"><span className="text-white/40 ml-[17px]">Host:</span><span className="text-white/70">{parsedConn.host}:{parsedConn.port}</span></div>
-                          <div className="flex items-center gap-2"><span className="text-white/40 ml-[17px]">DB:</span><span className="text-white/70">{parsedConn.database}</span></div>
-                        </div>
-                      )}
-                      <button
-                        disabled={!parsedConn}
-                        onClick={() => setWizardStep(2)}
-                        className="w-full px-3 py-2 rounded-lg bg-gradient-to-r from-[#4A90D9] to-[#2d6db5] text-white text-[11px] font-bold disabled:opacity-30 transition-all"
-                      >
-                        Next: Get Extraction Query →
-                      </button>
-                    </div>
-                  )}
-
-                  {wizardStep === 2 && parsedConn && (
-                    <div className="space-y-2 pt-2">
-                      <label className="text-[10px] text-white/40 font-mono uppercase tracking-wider">Run this query on your {parsedConn.protocol} database:</label>
-                      <div className="relative">
-                        <pre className="bg-[#040810] border border-white/[0.08] rounded-lg p-3 text-[10px] text-white/70 font-mono overflow-x-auto max-h-32 whitespace-pre-wrap">
-                          {getExtractionQuery(parsedConn)}
-                        </pre>
-                        <button
-                          onClick={() => {
-                            navigator.clipboard.writeText(getExtractionQuery(parsedConn));
-                            setCopiedQuery(true);
-                            setTimeout(() => setCopiedQuery(false), 2000);
-                          }}
-                          className="absolute top-2 right-2 p-1.5 rounded-md bg-white/[0.05] hover:bg-white/[0.1] transition-all"
-                        >
-                          {copiedQuery ? <Check size={10} className="text-[#9be7a6]" /> : <ClipboardCopy size={10} className="text-white/50" />}
-                        </button>
-                      </div>
-                      <div className="flex gap-2">
-                        <button onClick={() => setWizardStep(1)} className="px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.06] text-white/60 text-[11px] font-medium hover:bg-white/[0.08] transition-all">← Back</button>
-                        <button onClick={() => setWizardStep(3)} className="flex-1 px-3 py-1.5 rounded-lg bg-gradient-to-r from-[#4A90D9] to-[#2d6db5] text-white text-[11px] font-bold transition-all">Next: Paste Results →</button>
-                      </div>
-                    </div>
-                  )}
-
-                  {wizardStep === 3 && (
-                    <div className="space-y-2 pt-2">
-                      <label className="text-[10px] text-white/40 font-mono uppercase tracking-wider">Paste the query output (CREATE TABLE statements):</label>
-                      <p className="text-[10px] text-white/30">Paste the DDL output from your database tool here, then click Import & Build.</p>
-                      <div className="flex gap-2">
-                        <button onClick={() => setWizardStep(2)} className="px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.06] text-white/60 text-[11px] font-medium hover:bg-white/[0.08] transition-all">← Back</button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* Import SQL editor */}
-            <SqlEditor
-              value={importText}
-              onChange={setImportText}
-              textareaRef={importTextareaRef}
-              placeholder={`-- Paste your ${importDialect === 'sql' ? 'SQL DDL' : importDialect} schema here...\n-- Or drag & drop a file`}
-              isImport={true}
-              isValidSql={isValidSql}
-              errorLines={errorLines}
-              cursorLine={cursorLine}
-              cursorCol={cursorCol}
-              showAutocomplete={showAutocomplete}
-              autocompleteItems={autocompleteItems}
-              autocompleteIdx={autocompleteIdx}
-              handleCursorChange={handleCursorChange}
-              handleEditorKeyDown={handleEditorKeyDown}
-              highlightSql={highlightSql}
-              importTextareaRef={importTextareaRef}
-              editorTextareaRef={editorTextareaRef}
-              setImportText={setImportText}
-              setGeneratedSql={layout.setGeneratedSql}
-              setShowAutocomplete={setShowAutocomplete}
-            />
-
-            {/* Import actions */}
-            <div className="flex items-center justify-between gap-2 shrink-0">
-              <div className="flex items-center gap-2">
-                {/* Format */}
-                <button
-                  onClick={handleFormatSql}
-                  disabled={!importText}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium rounded-lg bg-white/[0.03] border border-white/[0.06] text-white/60 hover:text-white hover:bg-white/[0.06] transition-all disabled:opacity-30"
-                >
-                  <Braces size={11} />
-                  Format
-                </button>
-              </div>
-              <button
-                onClick={handleGenerateFromImport}
-                disabled={!importText.trim()}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-gradient-to-r from-[#4A90D9] to-[#2d6db5] text-white text-[11px] font-bold shadow-[0_4px_16px_rgba(74,144,217,0.25)] hover:shadow-[0_6px_20px_rgba(74,144,217,0.35)] transition-all disabled:opacity-40"
-              >
-                <Database size={12} />
-                Import & Build
-              </button>
-            </div>
-          </div>
-        )}
-
         {/* ── COMPILE ERROR ────────────────────────────────────────────── */}
         {compileError && (
           <div className="flex items-start gap-2 text-[11px] text-red-300 bg-red-500/8 border border-red-500/20 p-2.5 rounded-lg shrink-0">
@@ -1055,8 +597,9 @@ export function SQLCodePanel() {
         )}
       </div>
 
-      {/* ─── STATUS BAR ─────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between px-4 py-2 border-t border-white/[0.04] bg-[#030710]/60 shrink-0">
+      {/* ─── STATUS BAR (the DBML tab renders its own) ─────────────────── */}
+      {activeTab !== 'dbml' && (
+      <div className="flex items-center justify-between px-4 py-2 border-t border-white/[0.06] bg-[#1e1e1e] shrink-0">
         <div className="flex items-center gap-3">
           {/* Validation indicator */}
           <div className="flex items-center gap-1.5">
@@ -1073,7 +616,7 @@ export function SQLCodePanel() {
           {/* Dialect badge */}
           <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-white/[0.03] border border-white/[0.04]">
             <Database size={9} className="text-[#4A90D9]/60" />
-            <span className="text-[9px] text-white/40 font-mono font-bold uppercase">PostgreSQL</span>
+            <span className="text-[9px] text-white/40 font-mono font-bold uppercase">{SQL_DIALECTS.find((d) => d.id === canvasDialect)?.label || canvasDialect}</span>
           </div>
 
           {/* Table count */}
@@ -1093,6 +636,7 @@ export function SQLCodePanel() {
           </span>
         </div>
       </div>
+      )}
     </>
   );
 
@@ -1101,39 +645,27 @@ export function SQLCodePanel() {
     return (
       <div
         ref={containerRef}
-        className="fixed inset-0 top-[80px] z-40 bg-[#060b12]/98 backdrop-blur-xl border-r border-white/[0.08] shadow-[0_20px_60px_rgba(0,0,0,0.8)] flex flex-col"
-        onDragOver={activeTab === 'import' ? handleDragOver : undefined}
-        onDragLeave={activeTab === 'import' ? handleDragLeave : undefined}
-        onDrop={activeTab === 'import' ? handleDrop : undefined}
+        className="fixed inset-0 top-[var(--app-header-h)] z-40 bg-[#1e1e1e] border-r border-white/[0.08] shadow-[0_20px_60px_rgba(0,0,0,0.8)] flex flex-col"
+        style={{ left: aiOffset }}
       >
+        <EditorEdgeHandle mode="fullscreen" onClick={cycleEditor} className="fixed top-[calc(var(--app-header-h)+16px)] right-0" />
         {panelBody}
       </div>
     );
   }
 
-  // ─── SPLIT MODE: flex-based panel that pushes the canvas ────────────────
+  // ─── SPLIT MODE: flex-based panel that pushes the canvas (the same tree, hidden, when collapsed) ────
   return (
+    <>
+    {collapsed && <EditorEdgeHandle mode="collapsed" onClick={cycleEditor} className="fixed top-[calc(var(--app-header-h)+16px)]" style={{ left: aiOffset }} />}
     <div
-      ref={containerRef}
-      className="relative h-full shrink-0 bg-[#060b12]/98 backdrop-blur-xl border-r border-white/[0.08] shadow-[0_20px_60px_rgba(0,0,0,0.8)] flex flex-col overflow-hidden"
-      style={{
-        width: `${layout.panelWidth}vw`,
-        minWidth: '360px',
-        maxWidth: '60vw',
-      }}
-      onDragOver={activeTab === 'import' ? handleDragOver : undefined}
-      onDragLeave={activeTab === 'import' ? handleDragLeave : undefined}
-      onDrop={activeTab === 'import' ? handleDrop : undefined}
+      className={collapsed ? "hidden" : `relative h-full shrink-0 ${everCollapsed.current ? "animate-in slide-in-from-left-4 fade-in duration-200" : ""}`}
+      style={{ width: `${layout.panelWidth}vw`, minWidth: '360px', maxWidth: '60vw' }}
     >
-      {/* ─── PROTRUDING CHEVRON TAB (Right Edge Handle) ───────────────── */}
       <div
-        onClick={() => layout.toggleCodeWindowFullscreen()}
-        className="absolute top-4 right-[-24px] z-50 w-6 h-11 bg-[#090d16] border border-l-0 border-white/[0.12] rounded-r-lg flex items-center justify-center cursor-pointer shadow-[4px_0_16px_rgba(0,0,0,0.6)] hover:bg-[#121926] text-white/80 hover:text-white transition-all group"
-        title="Make Full Screen (>)"
+        ref={containerRef}
+        className="relative h-full w-full bg-[#1e1e1e] border-r border-white/[0.08] shadow-[0_20px_60px_rgba(0,0,0,0.8)] flex flex-col overflow-hidden"
       >
-        <ChevronRight size={14} className="group-hover:translate-x-0.5 transition-transform text-[#4A90D9]" />
-      </div>
-
       {/* ─── RESIZE HANDLE (right edge) ─────────────────────────────────── */}
       <div
         className="resize-handle-h absolute top-0 right-0 w-[6px] h-full z-50 cursor-col-resize group"
@@ -1151,7 +683,11 @@ export function SQLCodePanel() {
       </div>
 
       {panelBody}
+      </div>
+
+      {/* sits on the panel's right edge, over the canvas (outside the clipped panel) */}
+      <EditorEdgeHandle mode="split" onClick={cycleEditor} className="absolute top-4 left-full" />
     </div>
+    </>
   );
 }
-

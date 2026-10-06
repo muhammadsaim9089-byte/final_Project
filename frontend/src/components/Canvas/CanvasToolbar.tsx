@@ -49,8 +49,8 @@ export function CanvasToolbar({ undo, redo, canUndo, canRedo, rfInstance, detail
         setShowZoomMenu(false);
       }
     };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    document.addEventListener("pointerdown", handleClickOutside, true); // capture: the canvas stops mousedown from bubbling
+    return () => document.removeEventListener("pointerdown", handleClickOutside, true);
   }, []);
 
   const handleZoomIn = () => {

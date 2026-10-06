@@ -1,8 +1,12 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { X, Plus, Trash2, GripVertical, Database, ShieldAlert, Key, SlidersHorizontal } from "lucide-react";
+import { X, Plus, Trash2, GripVertical, Database, ShieldAlert, SlidersHorizontal } from "lucide-react";
 import { Node, Edge } from "@xyflow/react";
+import { useLayout } from "@/components/Layout/LayoutContext";
+import { isSqlDialect, typesForDialect } from "@/lib/sql/dialects";
+import { isDepEdge, normalizeRelType, nodeKey } from "@/lib/model/canvasAdapter";
+import { rekeyViews } from "@/lib/model/types";
 
 interface NodeAttribute {
   name: string;
@@ -19,6 +23,10 @@ interface NodeAttribute {
   fkRefTable?: string;
   fkRefField?: string;
   fkRelationType?: string;
+  /** Name the column had when the editor opened — lets a rename ripple into relationships. */
+  _orig?: string;
+  /** Anything else the diagram stores on a column (checks, metadata …) survives an edit untouched. */
+  [key: string]: any;
 }
 
 interface TableIndex {
@@ -45,7 +53,6 @@ interface TableEditorModalProps {
   takeSnapshot: (override?: { nodes: Node[]; edges: Edge[] }) => void;
 }
 
-const SQL_TYPES = ["serial", "integer", "bigint", "varchar", "text", "boolean", "timestamp", "date", "float", "decimal", "uuid", "char", "json", "jsonb"];
 const RELATION_TYPES = ["One to One", "One to Many", "Many to One"];
 const THEME_COLORS = [
   { name: "Lime", hex: "#C2EF4E" },
@@ -59,8 +66,8 @@ const THEME_COLORS = [
 const COL_COLORS = ["", "#C2EF4E", "#6A5FC1", "#FF6B6B", "#4A90D9", "#f97316", "#10B981"];
 
 function mapRelationType(ui: string | undefined): string {
+  // edges point parent → child, so "many to one" (child → parent) is the canonical one-to-many
   if (ui === "One to One") return "one-to-one";
-  if (ui === "Many to One") return "many-to-one";
   return "one-to-many";
 }
 
@@ -92,8 +99,10 @@ export function TableEditorModal({
   onClose,
   takeSnapshot,
 }: TableEditorModalProps) {
+  const layout = useLayout();
   const [tableName, setTableName] = useState("new_table");
-  const [tableColor, setTableColor] = useState("#C2EF4E");
+  const [tableSchema, setTableSchema] = useState("");
+  const [tableColor, setTableColor] = useState("");
   const [tableGroup, setTableGroup] = useState("");
   const [tableComment, setTableComment] = useState("");
   const [columns, setColumns] = useState<NodeAttribute[]>([
@@ -111,11 +120,14 @@ export function TableEditorModal({
       if (node) {
         const data = node.data as any;
         setTableName(data.label || "");
-        setTableColor(data.color || "#C2EF4E");
+        setTableSchema(data.schema || "");
+        setTableColor(data.color || "");
         setTableGroup(data.group || "");
         setTableComment(data.comment || "");
         setColumns(
           ((data.attributes as any[]) || []).map((attr) => ({
+            ...attr,
+            _orig: attr.name || "",
             name: attr.name || "",
             type: attr.type || "varchar",
             isPk: !!attr.isPk,
@@ -140,7 +152,8 @@ export function TableEditorModal({
       let count = 1;
       while (nodes.some((n) => n.data.label === `table_${count}`)) count++;
       setTableName(`table_${count}`);
-      setTableColor("#C2EF4E");
+      setTableSchema("");
+      setTableColor("");
       setTableGroup("");
       setTableComment("");
       setColumns([
@@ -150,7 +163,9 @@ export function TableEditorModal({
       setConstraints([]);
       setNameError("");
     }
-  }, [isOpen, tableNodeId, nodes]);
+    // load once per open — canvas updates (measurements, hover highlights) must not wipe unsaved edits
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, tableNodeId]);
 
   if (!isOpen) return null;
 
@@ -245,129 +260,151 @@ export function TableEditorModal({
     setConstraints((prev) => prev.filter((_, i) => i !== idx));
   };
 
-  const buildAttrPayload = (c: NodeAttribute) => ({
-    name: c.name,
-    type: c.type,
-    isPk: c.isPk,
-    isFk: c.isFk,
-    size: c.size,
-    defaultVal: c.defaultVal,
-    allowNull: c.allowNull,
-    unique: c.unique,
-    autoIncrement: c.autoIncrement,
-    color: c.color,
-    comment: c.comment,
-    fkRefTable: c.fkRefTable,
-    fkRefField: c.fkRefField,
-    fkRelationType: c.fkRelationType,
-  });
+  // the editor-only bookkeeping field never reaches the diagram
+  const buildAttrPayload = (c: NodeAttribute) => {
+    const { _orig, ...rest } = c;
+    return rest;
+  };
 
-  const buildFkEdges = (childNodeId: string): { edges: Edge[]; misses: string[] } => {
-    const list: Edge[] = [];
-    const misses: string[] = [];
-    columns.forEach((c, idx) => {
-      if (!c.isFk || !c.fkRefTable) return;
-      const parentNode = nodes.find((n) => n.data.label === c.fkRefTable);
-      if (!parentNode) {
-        misses.push(c.fkRefTable);
+  /**
+   * Brings the diagram's relationships in line with the edited table:
+   *  - column renames ripple into every relationship / lineage edge that mentions the column
+   *  - FK columns keep their existing edge (colour, actions, name …); missing ones are created, removed ones dropped
+   */
+  const reconcileEdges = (tableId: string, oldLabel: string, newLabel: string): { edges: Edge[]; nodeFix: (n: Node) => Node } => {
+    const renames = new Map<string, string>();
+    for (const c of columns) if (c._orig && c.name && c._orig !== c.name) renames.set(c._orig, c.name);
+    const rn = (v: unknown) => (typeof v === "string" && renames.has(v) ? (renames.get(v) as string) : v);
+
+    let eds = edges.map((e) => {
+      if (!renames.size) return e;
+      const d = (e.data as any) || {};
+      if (isDepEdge(e)) {
+        let data = d;
+        if (e.source === tableId && d.fromColumn && renames.has(d.fromColumn)) data = { ...data, fromColumn: rn(d.fromColumn) };
+        if (e.target === tableId && d.toColumn && renames.has(d.toColumn)) data = { ...data, toColumn: rn(d.toColumn) };
+        return data === d ? e : { ...e, data };
+      }
+      let data = d;
+      if (e.source === tableId) {
+        data = { ...data, sourceColumn: rn(d.sourceColumn), referencedKey: rn(d.referencedKey), sourceColumns: Array.isArray(d.sourceColumns) ? d.sourceColumns.map(rn) : d.sourceColumns };
+      }
+      if (e.target === tableId) {
+        data = { ...data, targetColumn: rn(data.targetColumn), foreignKey: rn(data.foreignKey), targetColumns: Array.isArray(data.targetColumns) ? data.targetColumns.map(rn) : data.targetColumns };
+      }
+      return data === d ? e : { ...e, data };
+    });
+
+    // relationships owned by this table as the *child* (its FK columns)
+    const colOf = (e: Edge) => ((e.data as any)?.targetColumn || (e.data as any)?.foreignKey || "") as string;
+    const fkCols = columns.filter((c) => c.isFk && c.fkRefTable && c.name);
+    const wanted = new Set<string>();
+    const edgeType = edges.find((e) => !isDepEdge(e))?.type || "crowsFoot";
+    const created: Edge[] = [];
+    fkCols.forEach((c, idx) => {
+      const parent = nodes.find((n) => n.type === "tableMode" && n.id !== tableId && n.data.label === c.fkRefTable);
+      if (!parent) return;
+      const refField = c.fkRefField || "id";
+      const found = eds.find((e) => !isDepEdge(e) && e.target === tableId && e.source === parent.id && colOf(e) === c.name);
+      if (found) {
+        wanted.add(found.id);
+        const d = (found.data as any) || {};
+        const nextType = mapRelationType(c.fkRelationType);
+        const typeChanged = normalizeRelType(d.relationshipType) !== normalizeRelType(nextType) && normalizeRelType(d.relationshipType) !== "many-to-many";
+        if (typeChanged || (d.sourceColumn || d.referencedKey) !== refField) {
+          eds = eds.map((e) => (e.id === found.id ? { ...e, data: { ...d, relationshipType: typeChanged ? nextType : d.relationshipType, sourceColumn: refField, referencedKey: refField } } : e));
+        }
         return;
       }
-      list.push({
-        id: `edge-${childNodeId}-${c.name}-${Date.now()}-${idx}`,
-        source: parentNode.id,
-        target: childNodeId,
-        type: "crowsFoot",
-        data: {
-          relationshipType: mapRelationType(c.fkRelationType),
-          foreignKey: c.name,
-          referencedKey: c.fkRefField || "id",
-          targetColumn: c.name,
-          sourceColumn: c.fkRefField || "id",
-        },
+      const id = `e_${parent.id}_${tableId}_${c.name}_${Date.now().toString(36)}${idx}`;
+      wanted.add(id);
+      created.push({
+        id,
+        source: parent.id,
+        target: tableId,
+        type: edgeType,
+        data: { kind: "ref", relationshipType: mapRelationType(c.fkRelationType), foreignKey: c.name, referencedKey: refField, targetColumn: c.name, sourceColumn: refField, onDelete: "NO ACTION", onUpdate: "CASCADE" },
       });
     });
-    return { edges: list, misses };
+    eds = eds.filter((e) => {
+      if (isDepEdge(e) || e.target !== tableId) return true;
+      const d = (e.data as any) || {};
+      // many-to-many and composite relationships have no single FK column to reconcile against
+      if (normalizeRelType(d.relationshipType) === "many-to-many" || (d.targetColumns?.length ?? 0) > 1 || !colOf(e)) return true;
+      return wanted.has(e.id);
+    });
+
+    // other tables' FK metadata that points at this table (renamed table / renamed referenced columns)
+    const nodeFix = (n: Node): Node => {
+      if (n.id === tableId || n.type !== "tableMode") return n;
+      const attrs: any[] = (n.data as any).attributes || [];
+      if (!attrs.some((a) => a.fkRefTable === oldLabel)) return n;
+      return { ...n, data: { ...n.data, attributes: attrs.map((a) => (a.fkRefTable === oldLabel ? { ...a, fkRefTable: newLabel, fkRefField: renames.has(a.fkRefField) ? renames.get(a.fkRefField) : a.fkRefField } : a)) } };
+    };
+    return { edges: [...eds, ...created], nodeFix };
   };
 
   const handleSave = () => {
     const finalTableName = tableName.trim();
+    const finalSchema = tableSchema.trim();
     if (!finalTableName) {
       setNameError("Table name is required.");
       return;
     }
     const nameClash = nodes.some(
-      (n) => n.type === "tableMode" && n.id !== tableNodeId && (n.data.label as string) === finalTableName
+      (n) => n.type === "tableMode" && n.id !== tableNodeId && (n.data.label as string).toLowerCase() === finalTableName.toLowerCase() && String((n.data as any).schema || "") === finalSchema
     );
     if (nameClash) {
-      setNameError(`A table named "${finalTableName}" already exists.`);
+      setNameError(`A table named "${finalTableName}" already exists${finalSchema ? ` in schema "${finalSchema}"` : ""}.`);
+      return;
+    }
+    const emptyCol = columns.findIndex((c) => !c.name.trim());
+    if (emptyCol >= 0) {
+      setNameError(`Field ${emptyCol + 1} needs a name.`);
       return;
     }
     setNameError("");
 
-    const ourFkNames = new Set(columns.filter((c) => c.isFk && c.name).map((c) => c.name));
-
-    const filterOwnedChildEdges = (eds: Edge[], childId: string) =>
-      eds.filter((e) => {
-        const fk = (e.data as any)?.foreignKey as string | undefined;
-        if (fk && ourFkNames.has(fk) && (e.source === childId || e.target === childId)) {
-          return false;
-        }
-        if (!fk && e.target === childId) return false;
-        return true;
-      });
+    const tableData = { label: finalTableName, schema: finalSchema, color: tableColor, group: tableGroup.trim(), comment: tableComment, attributes: columns.map(buildAttrPayload), indexes, constraints };
+    let nextNodes: Node[];
+    let nextEdges: Edge[];
 
     if (tableNodeId === "new") {
       const newNodeId = `table_${Date.now()}`;
-      const offset = nodes.length * 50;
-      const newNode: Node = {
-        id: newNodeId,
-        type: "tableMode",
-        position: { x: 100 + offset, y: 100 + offset },
-        data: {
-          label: finalTableName,
-          color: tableColor,
-          group: tableGroup,
-          comment: tableComment,
-          attributes: columns.map(buildAttrPayload),
-          indexes,
-          constraints,
-        },
-      };
-      const nextNodes = [...nodes, newNode];
-      const { edges: newEdgesList } = buildFkEdges(newNodeId);
-      const nextEdges = [...edges, ...newEdgesList];
-      setNodes(nextNodes);
-      setEdges(nextEdges);
-      takeSnapshot({ nodes: nextNodes, edges: nextEdges });
+      // drop the new table to the right of everything that is already on the canvas
+      const tables = nodes.filter((n) => n.type === "tableMode");
+      const x = tables.length ? Math.max(...tables.map((n) => n.position.x + ((n as any).measured?.width || 260))) + 90 : 100;
+      const y = tables.length ? Math.min(...tables.map((n) => n.position.y)) : 100;
+      const newNode: Node = { id: newNodeId, type: "tableMode", position: { x, y }, sourcePosition: "right" as any, targetPosition: "left" as any, data: { ...tableData, alias: "", icon: "server", seedData: [] } };
+      const rec = reconcileEdges(newNodeId, "", finalTableName);
+      nextNodes = [...nodes, newNode];
+      nextEdges = rec.edges;
     } else {
-      const nextNodes = nodes.map((n) => {
-        if (n.id !== tableNodeId) return n;
-        return {
-          ...n,
-          data: {
-            ...n.data,
-            label: finalTableName,
-            color: tableColor,
-            group: tableGroup,
-            comment: tableComment,
-            attributes: columns.map(buildAttrPayload),
-            indexes,
-            constraints,
-          },
-        };
-      });
-
-      const { edges: updatedEdgesList } = buildFkEdges(tableNodeId as string);
-      const preserved = filterOwnedChildEdges(edges, tableNodeId as string);
-      const nextEdges = [...preserved, ...updatedEdgesList];
-
-      setNodes(nextNodes);
-      setEdges(nextEdges);
-      takeSnapshot({ nodes: nextNodes, edges: nextEdges });
+      const current = nodes.find((n) => n.id === tableNodeId);
+      const oldLabel = String(current?.data.label ?? "");
+      const rec = reconcileEdges(tableNodeId as string, oldLabel, finalTableName);
+      nextNodes = nodes.map((n) => (n.id === tableNodeId ? { ...n, data: { ...n.data, ...tableData } } : rec.nodeFix(n)));
+      nextEdges = rec.edges;
+      if (current) {
+        const oldKey = nodeKey(current);
+        const newKey = nodeKey({ ...current, data: { ...current.data, ...tableData } });
+        if (oldKey !== newKey) layout.setMeta((m) => rekeyViews(m, oldKey, newKey));
+      }
     }
 
+    if (tableGroup.trim() && !layout.meta.groups[tableGroup.trim()]) {
+      layout.setMeta((m) => (m.groups[tableGroup.trim()] ? m : { ...m, groups: { ...m.groups, [tableGroup.trim()]: {} } }));
+    }
+    setNodes(nextNodes);
+    setEdges(nextEdges);
+    takeSnapshot({ nodes: nextNodes, edges: nextEdges });
     onClose();
   };
+
+  // data-type suggestions follow the diagram's database; enums defined in the diagram are valid types too
+  const dialect = layout.getCanvasApi()?.getSqlDialect();
+  const typeSuggestions = Array.from(new Set([...typesForDialect(dialect && isSqlDialect(dialect) ? dialect : undefined), ...layout.meta.enums.map((e) => e.name)]));
+  const knownSchemas = Array.from(new Set(nodes.filter((n) => n.type === "tableMode").map((n) => String((n.data as any).schema || "")).filter(Boolean)));
 
   const otherTables = nodes.filter((n) => n.type === "tableMode" && n.id !== tableNodeId);
 
@@ -376,21 +413,31 @@ export function TableEditorModal({
       <div className="w-[94vw] max-w-6xl h-[88vh] bg-[#f8fafc] dark:bg-[#0c101b] rounded-2xl border border-slate-200 dark:border-white/[0.08] shadow-2xl flex flex-col overflow-hidden text-slate-800 dark:text-white">
         
         {/* Modal Header */}
-        <div className="flex items-center justify-between px-7 py-4.5 border-b border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#080c14] shrink-0">
-          <div className="flex items-center gap-3">
-            <h2 className="text-base font-bold tracking-wide">
+        <div className="flex items-center justify-between px-9 min-h-[88px] py-5 border-b border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#080c14] shrink-0">
+          <div className="flex items-center gap-4">
+            <h2 className="text-[28px] leading-tight font-bold tracking-wide">
               {tableNodeId === "new" ? "Add Table: " : "Edit Table: "}
               <span className="text-[#2b79c9] dark:text-[#4A90D9]">{tableName || "Untitled"}</span>
             </h2>
             <div className="relative">
               <button
                 onClick={() => setColorPickerOpen(!colorPickerOpen)}
-                className="w-5 h-5 rounded-full border border-white/20 transition-transform hover:scale-110 shadow-sm"
-                style={{ backgroundColor: tableColor }}
+                className="w-8 h-8 rounded-full border-2 border-white/25 transition-transform hover:scale-110 shadow-md"
+                style={{ backgroundColor: tableColor || "#C2EF4E" }}
                 title="Select header color"
               />
               {colorPickerOpen && (
-                <div className="absolute left-0 top-full mt-2 bg-white dark:bg-[#0D1117] border border-slate-200 dark:border-white/[0.1] rounded-xl p-2 flex gap-2 z-50 shadow-2xl">
+                <div className="absolute left-0 top-full mt-3 bg-white dark:bg-[#0D1117] border border-slate-200 dark:border-white/[0.1] rounded-xl p-3 flex gap-2.5 z-50 shadow-2xl">
+                  <button
+                    onClick={() => {
+                      setTableColor("");
+                      setColorPickerOpen(false);
+                    }}
+                    className={`w-7 h-7 rounded-full border border-dashed text-[11px] leading-none text-slate-400 hover:scale-110 transition-transform ${tableColor ? "border-white/30" : "border-white ring-1 ring-white/60"}`}
+                    title="Default colour"
+                  >
+                    ✕
+                  </button>
                   {THEME_COLORS.map((c) => (
                     <button
                       key={c.name}
@@ -398,7 +445,7 @@ export function TableEditorModal({
                         setTableColor(c.hex);
                         setColorPickerOpen(false);
                       }}
-                      className="w-5 h-5 rounded-full border border-white/10 hover:scale-110 transition-transform"
+                      className="w-7 h-7 rounded-full border border-white/10 hover:scale-110 transition-transform"
                       style={{ backgroundColor: c.hex }}
                       title={c.name}
                     />
@@ -409,14 +456,15 @@ export function TableEditorModal({
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-all"
+            className="p-3 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-all"
+            aria-label="Close"
           >
-            <X size={18} />
+            <X size={26} />
           </button>
         </div>
 
         {/* Scrollable Body */}
-        <div className="flex-1 overflow-y-auto px-8 py-6 space-y-8 scrollbar-thin">
+        <div className="flex-1 overflow-y-auto overscroll-contain scrollbar-hide px-8 py-6 space-y-8">
           
           {/* ─── TABLE NAME & GROUP ─── */}
           <div className="space-y-4">
@@ -437,17 +485,37 @@ export function TableEditorModal({
                 />
                 {nameError && <p className="text-[10px] text-red-500">{nameError}</p>}
               </div>
-              <div className="space-y-1.5">
-                <label className="text-[10px] text-slate-500 dark:text-white/50 uppercase tracking-wider font-semibold">Table Group (Schema Namespace)</label>
-                <input
-                  type="text"
-                  value={tableGroup}
-                  onChange={(e) => setTableGroup(e.target.value)}
-                  placeholder="e.g. Auth, Public"
-                  className="w-full bg-white dark:bg-white/[0.02] border border-slate-300 dark:border-white/[0.08] rounded-xl px-4 py-2.5 text-xs outline-none focus:border-[#4A90D9] transition-all font-sans"
-                />
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] text-slate-500 dark:text-white/50 uppercase tracking-wider font-semibold">Schema</label>
+                  <input
+                    type="text"
+                    list="te-schemas"
+                    value={tableSchema}
+                    onChange={(e) => {
+                      setTableSchema(e.target.value);
+                      setNameError("");
+                    }}
+                    placeholder="public"
+                    className="w-full bg-white dark:bg-white/[0.02] border border-slate-300 dark:border-white/[0.08] rounded-xl px-4 py-2.5 text-xs outline-none focus:border-[#4A90D9] transition-all font-mono"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] text-slate-500 dark:text-white/50 uppercase tracking-wider font-semibold">Table Group</label>
+                  <input
+                    type="text"
+                    list="te-groups"
+                    value={tableGroup}
+                    onChange={(e) => setTableGroup(e.target.value)}
+                    placeholder="e.g. Auth, Billing"
+                    className="w-full bg-white dark:bg-white/[0.02] border border-slate-300 dark:border-white/[0.08] rounded-xl px-4 py-2.5 text-xs outline-none focus:border-[#4A90D9] transition-all font-sans"
+                  />
+                </div>
               </div>
             </div>
+            <datalist id="te-type-suggestions">{typeSuggestions.map((t) => <option key={t} value={t} />)}</datalist>
+            <datalist id="te-schemas">{knownSchemas.map((s) => <option key={s} value={s} />)}</datalist>
+            <datalist id="te-groups">{Object.keys(layout.meta.groups).map((g) => <option key={g} value={g} />)}</datalist>
           </div>
 
           {/* ─── TABLE STRUCTURE (FIELDS) ─── */}
@@ -525,15 +593,15 @@ export function TableEditorModal({
                     {/* Type */}
                     <div className="col-span-3 space-y-1">
                       <label className="text-[9px] font-semibold uppercase text-slate-400 dark:text-white/40 tracking-wider">TYPE</label>
-                      <select
+                      <input
+                        type="text"
+                        list="te-type-suggestions"
                         value={col.type}
                         onChange={(e) => handleUpdateColumn(idx, "type", e.target.value)}
-                        className="w-full bg-slate-50 dark:bg-[#050811] border border-slate-200 dark:border-white/[0.08] rounded-lg px-3 py-2 text-xs outline-none focus:border-[#4A90D9]"
-                      >
-                        {SQL_TYPES.map((t) => (
-                          <option key={t} value={t}>{t}</option>
-                        ))}
-                      </select>
+                        placeholder="varchar(255)"
+                        spellCheck={false}
+                        className="w-full bg-slate-50 dark:bg-[#050811] border border-slate-200 dark:border-white/[0.08] rounded-lg px-3 py-2 text-xs font-mono outline-none focus:border-[#4A90D9]"
+                      />
                     </div>
 
                     {/* Color */}

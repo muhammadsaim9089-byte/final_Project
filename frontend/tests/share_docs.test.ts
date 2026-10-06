@@ -1,0 +1,145 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { buildFragment, resolveFragment, parseFragment, encodeText, decodeText } from "../src/lib/share/codec";
+import { parseDbml } from "../src/lib/dbml/parser";
+import { layoutModel } from "../src/lib/model/autoLayout";
+import { renderSvg } from "../src/lib/export/svgRenderer";
+import { generateHtmlDocs, generateMarkdownDocs } from "../src/lib/docs/generator";
+import { diffModels, diffLines, diffStats } from "../src/lib/model/diff";
+import { QUICK_ACTIONS, addTimestamps, detectRelationships, createTableGroups, remapDataTypes } from "../src/lib/ai/quickActions";
+import { pdfFromJpeg } from "../src/lib/export/raster";
+
+const DBML = `
+Table users [headercolor: #d35400] { id integer [pk, increment] email varchar(255) [unique, not null, note: 'Login | address'] }
+Table posts { id integer [pk] user_id integer  title text }
+Table auth_roles { id int [pk] }
+Table auth_perms { id int [pk] role_id int }
+Ref: posts.user_id > users.id
+TableGroup content { posts }
+Note n1 { 'hello world this is a long sticky note that wraps around' }
+Dep: users -> posts [note: 'lineage']
+`;
+
+test("share links: plain, compressed, with layout/title/theme", async () => {
+  const dbml = "Table a {\n  id int [pk] // ünïcode ✓\n}\n";
+  const frag = await buildFragment({ dbml, layout: { a: [10, 20] }, title: "My ERD" }, { theme: "dark" });
+  assert.match(frag, /^c=pako%3A/);
+  assert.match(frag, /&theme=dark$/);
+  const r = await resolveFragment("#" + frag);
+  assert.equal(r.status, "ok");
+  if (r.status !== "ok") return;
+  assert.equal(r.payload.dbml, dbml);
+  assert.deepEqual(r.payload.layout, { a: [10, 20] });
+  assert.equal(r.payload.title, "My ERD");
+  assert.equal(r.theme, "dark");
+});
+
+test("share links: uncompressed dbdiagram-style #c= value decodes", async () => {
+  const plain = "Table users {\n  id int [pk]\n}";
+  const value = encodeURIComponent(btoa(unescape(encodeURIComponent(plain)))); // exactly the snippet from the dbdiagram docs
+  assert.equal(await decodeText(value), plain);
+  assert.equal(await decodeText(await encodeText(plain, false)), plain);
+  const r = await resolveFragment("#c=" + value);
+  assert.equal(r.status === "ok" && r.payload.dbml, plain);
+});
+
+test("share links: password protection", async () => {
+  const frag = await buildFragment({ dbml: "Table secret { id int }", title: "T" }, { password: "hunter2" });
+  assert.match(frag, /^e=/);
+  assert.ok(!frag.includes("secret"));
+  assert.equal((await resolveFragment("#" + frag)).status, "needs-password");
+  const wrong = await resolveFragment("#" + frag, "nope");
+  assert.equal(wrong.status, "error");
+  const ok = await resolveFragment("#" + frag, "hunter2");
+  assert.equal(ok.status === "ok" && ok.payload.dbml, "Table secret { id int }");
+  assert.equal(parseFragment("#foo=bar").theme, "light");
+  assert.equal((await resolveFragment("#")).status, "empty");
+});
+
+test("svg renderer: tables, header colour, badges, relationships, groups, notes, themes, details", () => {
+  const model = layoutModel(parseDbml(DBML).model);
+  const dark = renderSvg(model, { theme: "dark", title: "Blog" });
+  assert.match(dark.svg, /^<svg xmlns=/);
+  assert.match(dark.svg, /#d35400/); // header colour
+  assert.match(dark.svg, />PK</);
+  assert.match(dark.svg, />FK</);
+  assert.match(dark.svg, /class="rel"/);
+  assert.match(dark.svg, /CONTENT/); // group label
+  assert.match(dark.svg, /hello world/); // sticky note
+  assert.ok(dark.width > 300 && dark.height > 100);
+  const light = renderSvg(model, { theme: "light" });
+  assert.match(light.svg, /fill="#ffffff"/);
+  assert.ok(!renderSvg(model, { showRelationships: false }).svg.includes('class="rel"'));
+  const headers = renderSvg(model, { detail: "headers" });
+  assert.ok(!headers.svg.includes(">email<"));
+  const keys = renderSvg(model, { detail: "keys" });
+  assert.ok(keys.svg.includes(">user_id<") && !keys.svg.includes(">title<"));
+  const only = renderSvg(model, { visibleKeys: new Set(["users"]) });
+  assert.ok(only.svg.includes(">users<") && !only.svg.includes(">posts<"));
+  assert.match(renderSvg({ ...model, tables: [], notes: [], groups: [] }).svg, /Empty diagram/);
+  // valid XML-ish: no raw < or & from user content
+  assert.ok(!renderSvg(parseDbml(`Table "a<b&c" { id int }`).model).svg.includes("a<b&c"));
+});
+
+test("documentation: markdown + html", () => {
+  const model = layoutModel(parseDbml(DBML).model);
+  const md = generateMarkdownDocs(model, { title: "Blog DB", generatedAt: new Date("2024-01-02") });
+  assert.match(md, /^# Blog DB/);
+  assert.match(md, /### users/);
+  assert.match(md, /\| `email` \| `varchar\(255\)` \| NOT NULL, UNIQUE \| {2}\| Login \\\| address \|/);
+  assert.match(md, /`user_id` → \[users\]\(#users\)\.`id`/);
+  assert.match(md, /referenced by \[posts\]/);
+  assert.match(md, /## Data lineage/);
+  assert.match(md, /Generated by DesignDB on 2024-01-02/);
+  const html = generateHtmlDocs(model, { svg: renderSvg(model).svg, generatedAt: new Date("2024-01-02") });
+  assert.match(html, /<!doctype html>/);
+  assert.match(html, /id="t-users"/);
+  assert.match(html, /<svg xmlns=/);
+  assert.match(html, /@media print/);
+  assert.ok(!html.includes("<script>alert"));
+});
+
+test("schema diff + line diff", () => {
+  const a = parseDbml(`Table t { id int [pk] a int }\nTable gone { id int }`).model;
+  const b = parseDbml(`Table t { id int [pk] a bigint b text }\nTable fresh { id int }\nRef: fresh.id > t.id`).model;
+  const d = diffModels(a, b);
+  assert.deepEqual(d.addedTables, ["fresh"]);
+  assert.deepEqual(d.removedTables, ["gone"]);
+  assert.deepEqual(d.changedTables[0].addedColumns, ["b"]);
+  assert.match(d.changedTables[0].changedColumns[0].changes[0], /int → bigint/);
+  assert.equal(d.addedRefs.length, 1);
+  assert.equal(diffModels(a, a).isEmpty, true);
+  const ops = diffLines("a\nb\nc\nd", "a\nB\nc\nd\ne");
+  assert.deepEqual(diffStats(ops), { added: 2, removed: 1 });
+  assert.equal(ops[0].type, "same");
+});
+
+test("quick actions", () => {
+  const m = parseDbml(DBML).model;
+  const ts = addTimestamps(m);
+  assert.ok(ts.model.tables.every((t) => t.columns.some((c) => c.name === "updated_at")));
+  const rel = detectRelationships(parseDbml(`Table users { id int [pk] }\nTable orders { id int [pk] user_id int }\nTable items { id int [pk] order_id int product_id int }`).model);
+  assert.deepEqual(rel.changes.sort(), ["items.order_id → orders.id", "orders.user_id → users.id"].sort());
+  const groups = createTableGroups(m);
+  assert.ok(groups.model.groups.some((g) => g.name === "Auth" && g.tables.length === 2));
+  const remap = remapDataTypes(parseDbml(`Table t { a timestamp b boolean c varchar(20) }`).model, "mysql");
+  assert.deepEqual(remap.model.tables[0].columns.map((c) => c.type), ["datetime", "boolean", "varchar(20)"]);
+  assert.ok(QUICK_ACTIONS.length >= 6);
+  // actions never mutate their input
+  assert.equal(m.tables[0].columns.length, 2);
+});
+
+test("pdf writer produces a structurally valid single-page PDF", () => {
+  const fakeJpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 0xff, 0xd9]);
+  const pdf = pdfFromJpeg(fakeJpeg, 100, 50, 75, 37.5, "Test (x)");
+  const text = Buffer.from(pdf).toString("latin1");
+  assert.ok(text.startsWith("%PDF-1.4"));
+  assert.ok(text.trimEnd().endsWith("%%EOF"));
+  assert.match(text, /\/Subtype \/Image \/Width 100 \/Height 50/);
+  assert.match(text, /\/MediaBox \[0 0 75 37.5\]/);
+  // xref offsets must point at "N 0 obj"
+  const start = Number(/startxref\n(\d+)/.exec(text)![1]);
+  assert.equal(text.slice(start, start + 4), "xref");
+  const entries = [...text.slice(start).matchAll(/(\d{10}) 00000 n/g)].map((m) => Number(m[1]));
+  entries.forEach((off, i) => assert.equal(text.slice(off, off + `${i + 1} 0 obj`.length), `${i + 1} 0 obj`));
+});

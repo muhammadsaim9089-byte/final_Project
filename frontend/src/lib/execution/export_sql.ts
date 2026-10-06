@@ -42,30 +42,39 @@ export function generateTables(schema: Schema, dialect: 'postgres' | 'mysql' | '
         const desc = (entity as any).description || (entity as any).comment;
         const group = ((entity as any).group as string || '').trim();
         if (desc && dialect !== 'postgres' && dialect !== 'mysql') {
-            sql += `-- Comment: ${desc}\n`;
+            // one line: a newline in the description would otherwise end the comment and run as SQL
+            sql += `-- Comment: ${String(desc).replace(/\s*[\r\n]+\s*/g, ' ')}\n`;
         }
-        
+
         sql += `CREATE TABLE ${qualifyName(entity.name, group, dialect)} (\n`;
         const colDefs: string[] = [];
+        // a composite key is one table-level PRIMARY KEY (a, b) — repeating PRIMARY KEY on each column is an error
+        const pkColumns = entity.attributes.filter(a => a.isPrimaryKey);
+        const compositeKey = pkColumns.length > 1;
         for (const attr of entity.attributes) {
             const rawType = attr.dataType.toUpperCase();
             const isSerial = rawType === 'SERIAL' || rawType === 'BIGSERIAL';
-            let def = `    ${escapeName(attr.name, dialect)} ${mapDataType(attr.dataType, dialect, (attr as any).size)}`;
-            if (attr.isPrimaryKey) {
+            const name = escapeName(attr.name, dialect);
+            let def = `    ${name} ${mapDataType(attr.dataType, dialect, (attr as any).size)}`;
+            if (attr.isPrimaryKey && !compositeKey) {
+                const useIdentity = (attr as any).autoIncrement || rawType.includes('INT') || (isSerial && dialect === 'sqlite');
                 if (isSerial && dialect === 'postgres') {
                     def += ` PRIMARY KEY`;
+                } else if (useIdentity && dialect === 'sqlite') {
+                    // SQLite only auto-numbers an INTEGER PRIMARY KEY, and AUTOINCREMENT must follow PRIMARY KEY
+                    def = `    ${name} INTEGER PRIMARY KEY AUTOINCREMENT`;
                 } else {
-                    const useIdentity = (attr as any).autoIncrement || rawType.includes('INT');
                     def += useIdentity ? ` ${getAutoIncrementSyntax(dialect)} PRIMARY KEY` : ` PRIMARY KEY`;
                 }
-            } else if ((attr as any).autoIncrement && !isSerial) {
+            } else if ((attr as any).autoIncrement && !isSerial && !attr.isPrimaryKey && dialect !== 'sqlite') {
                 def += ` ${getAutoIncrementSyntax(dialect)}`;
             }
-            if (!attr.isNullable && !attr.isPrimaryKey) def += ` NOT NULL`;
+            if (!attr.isNullable && (!attr.isPrimaryKey || compositeKey)) def += ` NOT NULL`;
             if (attr.isUnique && !attr.isPrimaryKey) def += ` UNIQUE`;
-            if (attr.defaultValue) def += ` DEFAULT ${attr.defaultValue}`;
+            if (attr.defaultValue) def += ` DEFAULT ${sqlDefault(attr.defaultValue, dialect)}`;
             colDefs.push(def);
         }
+        if (compositeKey) colDefs.push(`    PRIMARY KEY (${pkColumns.map(a => escapeName(a.name, dialect)).join(', ')})`);
 
         // Custom Constraints
         const customConstraints = (entity as any).constraints || [];
@@ -80,7 +89,7 @@ export function generateTables(schema: Schema, dialect: 'postgres' | 'mysql' | '
             for (const fk of fks) {
                 const toEnt = schema.entities.find(e => e.name === fk.toEntity);
                 const toGroup = toEnt ? ((toEnt as any).group as string || '') : '';
-                colDefs.push(`    CONSTRAINT fk_${entity.name}_${fk.foreignKey} FOREIGN KEY (${escapeName(fk.foreignKey, dialect)}) REFERENCES ${qualifyName(fk.toEntity, toGroup, dialect)}(${escapeName(fk.referencedKey, dialect)}) ON DELETE ${fk.onDelete} ON UPDATE ${fk.onUpdate}`);
+                colDefs.push(`    CONSTRAINT ${escapeName(`fk_${entity.name}_${fk.foreignKey}`, dialect)} FOREIGN KEY (${escapeName(fk.foreignKey, dialect)}) REFERENCES ${qualifyName(fk.toEntity, toGroup, dialect)}(${escapeName(fk.referencedKey, dialect)}) ON DELETE ${fk.onDelete} ON UPDATE ${fk.onUpdate}`);
             }
         }
         
@@ -112,7 +121,7 @@ export function generateTables(schema: Schema, dialect: 'postgres' | 'mysql' | '
             const toEnt = schema.entities.find(e => e.name === rel.toEntity);
             const fromGroup = fromEnt ? ((fromEnt as any).group as string || '') : '';
             const toGroup = toEnt ? ((toEnt as any).group as string || '') : '';
-            sql += `ALTER TABLE ${qualifyName(rel.fromEntity, fromGroup, dialect)} ADD CONSTRAINT fk_${rel.fromEntity}_${rel.foreignKey} FOREIGN KEY (${escapeName(rel.foreignKey, dialect)}) REFERENCES ${qualifyName(rel.toEntity, toGroup, dialect)}(${escapeName(rel.referencedKey, dialect)}) ON DELETE ${rel.onDelete} ON UPDATE ${rel.onUpdate};\n`;
+            sql += `ALTER TABLE ${qualifyName(rel.fromEntity, fromGroup, dialect)} ADD CONSTRAINT ${escapeName(`fk_${rel.fromEntity}_${rel.foreignKey}`, dialect)} FOREIGN KEY (${escapeName(rel.foreignKey, dialect)}) REFERENCES ${qualifyName(rel.toEntity, toGroup, dialect)}(${escapeName(rel.referencedKey, dialect)}) ON DELETE ${rel.onDelete} ON UPDATE ${rel.onUpdate};\n`;
         }
         sql += `\n`;
     }
@@ -204,11 +213,38 @@ function topologicalSort(schema: Schema): Entity[] {
     return sorted;
 }
 
+// Words PostgreSQL, MySQL or SQLite reserve that schemas commonly use as names (quoting one that only some dialects
+// reserve is harmless).
+const RESERVED = new Set([
+    'add', 'all', 'alter', 'analyze', 'and', 'any', 'as', 'asc', 'between', 'both', 'by', 'case', 'cast', 'change', 'check',
+    'collate', 'column', 'condition', 'constraint', 'create', 'cross', 'current_date', 'current_time', 'current_timestamp',
+    'current_user', 'database', 'default', 'delete', 'desc', 'describe', 'distinct', 'div', 'do', 'drop', 'else', 'end',
+    'except', 'exists', 'explain', 'false', 'fetch', 'for', 'foreign', 'from', 'full', 'grant', 'group', 'groups', 'having',
+    'if', 'in', 'index', 'inner', 'insert', 'interval', 'intersect', 'into', 'is', 'join', 'key', 'keys', 'kill', 'lateral',
+    'leading', 'left', 'like', 'limit', 'lock', 'match', 'mod', 'natural', 'not', 'null', 'offset', 'on', 'only', 'option',
+    'or', 'order', 'outer', 'primary', 'range', 'rank', 'read', 'references', 'release', 'rename', 'replace', 'require',
+    'returning', 'revoke', 'right', 'row', 'rows', 'schema', 'select', 'session_user', 'set', 'show', 'some', 'table', 'then',
+    'to', 'trailing', 'trigger', 'true', 'union', 'unique', 'update', 'usage', 'user', 'using', 'values', 'when', 'where',
+    'window', 'with', 'write',
+]);
+
+/** A plain, non-reserved name stays as it is; anything else is quoted, with quote characters inside it doubled. */
 function escapeName(name: string, dialect: 'postgres' | 'mysql' | 'sqlite'): string {
-    const reserved = ['user', 'order', 'group', 'select', 'where', 'from', 'table'];
-    const isReserved = reserved.includes(name.toLowerCase());
-    if (!isReserved) return name;
-    return dialect === 'mysql' ? `\`${name}\`` : `"${name}"`;
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !RESERVED.has(name.toLowerCase())) return name;
+    return dialect === 'mysql' ? `\`${name.replace(/`/g, '``')}\`` : `"${name.replace(/"/g, '""')}"`;
+}
+
+/**
+ * A DEFAULT clause value. Numbers, booleans, NULL, quoted literals, CURRENT_* keywords and expressions are SQL
+ * already; anything else is a text value and gets quoted (`DEFAULT 'pending'`, not `DEFAULT pending`).
+ */
+function sqlDefault(value: string, dialect: 'postgres' | 'mysql' | 'sqlite'): string {
+    const v = String(value).trim();
+    if (/^-?\d+(\.\d+)?$/.test(v) || /^(true|false|null)$/i.test(v) || /^'.*'$/s.test(v) || /^\(.*\)$/s.test(v)) return v;
+    if (/^(current_timestamp|current_date|current_time|localtimestamp|localtime)$/i.test(v)) return v.toUpperCase();
+    // a function call: SQLite only takes an expression default inside parentheses
+    if (/^[A-Za-z_][\w.]*\s*\(.*\)$/s.test(v)) return dialect === 'sqlite' ? `(${v})` : v;
+    return `'${v.replace(/'/g, "''")}'`;
 }
 
 function qualifyName(name: string, group: string | undefined, dialect: 'postgres' | 'mysql' | 'sqlite'): string {

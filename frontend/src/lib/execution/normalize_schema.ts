@@ -81,6 +81,9 @@ function apply1NF(schema: Schema, logs: string[]): { schema: Schema, changed: bo
     for (const attr of entity.attributes) {
       const isRepeatingGroup = (() => {
         if (attr.isPrimaryKey) return false;
+        // a number, flag, date or JSON document cannot hold a list of values, whatever the column is called
+        // (total_amount_cents, login_attempts, settings JSONB …)
+        if (/INT|DEC|NUM|FLOAT|DOUBLE|REAL|MONEY|SERIAL|BOOL|BIT|DATE|TIME|JSON|UUID|BLOB|BYTEA/i.test(attr.dataType || '')) return false;
         if (attr.name.includes('_list')) return true;
         if (attr.name.includes('_array')) return true;
         const lower = attr.name.toLowerCase();
@@ -96,13 +99,15 @@ function apply1NF(schema: Schema, logs: string[]): { schema: Schema, changed: bo
       if (isRepeatingGroup) {
          const newEntityName = `${entity.name}_${attr.name.replace(/_list|s$/g, '')}`;
          const newPkName = `${newEntityName}_id`;
-         
+         // the link back to the parent: `post_id`, not a second, non-key column called `id`
+         const fkName = pk!.name === 'id' ? `${entity.name}_id` : pk!.name;
+
          const newEntity: Entity = {
             name: newEntityName,
             description: `1NF abstraction for ${attr.name}`,
             attributes: [
               { name: newPkName, dataType: 'INTEGER', isPrimaryKey: true, isNullable: false, isUnique: true },
-              { name: pk!.name, dataType: pk!.dataType, isPrimaryKey: false, isNullable: false, isUnique: false },
+              { name: fkName, dataType: pk!.dataType, isPrimaryKey: false, isNullable: false, isUnique: false },
               { name: 'value', dataType: attr.dataType || 'VARCHAR(255)', isPrimaryKey: false, isNullable: false, isUnique: false }
             ]
          };
@@ -112,7 +117,7 @@ function apply1NF(schema: Schema, logs: string[]): { schema: Schema, changed: bo
              fromEntity: newEntityName,
              toEntity: entity.name,
              type: 'many-to-one',
-             foreignKey: pk!.name,
+             foreignKey: fkName,
              referencedKey: pk!.name,
              onDelete: 'CASCADE',
              onUpdate: 'CASCADE'
@@ -168,8 +173,9 @@ function apply2NF(schema: Schema, logs: string[]): { schema: Schema, changed: bo
       const stem = pkColName.replace(/_id$/, '');
       const newEntityName = `${stem}`;
 
-      // Avoid duplicating an entity that already exists
-      if (schema.entities.find(e => e.name === newEntityName) || newEntities.find(e => e.name === newEntityName)) {
+      // Avoid duplicating an entity that already exists — also under its plural name (`product` when `products` exists)
+      const forms = [stem, `${stem}s`, `${stem}es`, ...(stem.endsWith('y') ? [`${stem.slice(0, -1)}ies`] : [])];
+      if ([...schema.entities, ...newEntities].some(e => forms.includes(e.name))) {
         return;
       }
 

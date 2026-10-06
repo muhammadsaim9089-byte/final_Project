@@ -76,7 +76,8 @@ export function validateCanvasSchema(nodes: Node[], edges: Edge[]): ValidationRe
     const colNames = new Set<string>();
     const dupes = new Set<string>();
     for (const attr of attributes) {
-      const colLower = attr.name.toLowerCase();
+      if (!attr?.name) continue; // a column still being typed has no name yet
+      const colLower = String(attr.name).toLowerCase();
       if (colNames.has(colLower)) {
         dupes.add(attr.name);
       }
@@ -161,7 +162,9 @@ export function validateCanvasSchema(nodes: Node[], edges: Edge[]): ValidationRe
     adj.set(node.id, []);
   }
   for (const edge of edges) {
-    // Child depends on Parent (target depends on source)
+    // Child depends on Parent (target depends on source). A table referencing itself (employees.manager_id) is a
+    // normal, nullable self-reference — not a dependency cycle.
+    if (edge.source === edge.target) continue;
     if (adj.has(edge.target) && adj.has(edge.source)) {
       adj.get(edge.target)!.push(edge.source);
     }

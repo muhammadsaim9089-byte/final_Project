@@ -1,13 +1,17 @@
 import { z } from 'zod';
 
+// Models often answer `"defaultValue": 0` or `"size": 255` — accept numbers and booleans as their text, rather than
+// rejecting the whole schema over it.
+const text = z.preprocess((v) => (typeof v === "number" || typeof v === "boolean" ? String(v) : v), z.string().nullable().optional());
+
 export const AttributeSchema = z.object({
   name: z.string(),
   dataType: z.string(),
   isPrimaryKey: z.boolean().default(false),
   isNullable: z.boolean().default(false),
   isUnique: z.boolean().default(false),
-  defaultValue: z.string().nullable().optional(),
-  size: z.string().nullable().optional(),
+  defaultValue: text,
+  size: text,
   autoIncrement: z.boolean().optional(),
 });
 

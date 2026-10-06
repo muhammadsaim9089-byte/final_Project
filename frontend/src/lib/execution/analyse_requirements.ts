@@ -18,7 +18,7 @@ export async function analyzeRequirements(req: AnalyzeRequest): Promise<any> {
 
   const groq = new Groq({ apiKey });
   const modelName = req.model || 'openai/gpt-oss-120b';
-  const temperature = req.temperature || 0.1;
+  const temperature = req.temperature ?? 0.1; // 0 is a valid temperature: only a missing one gets the default
 
   try {
     const messages: any[] = [
